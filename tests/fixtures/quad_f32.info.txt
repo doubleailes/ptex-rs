@@ -1,0 +1,8 @@
+meshtype quad
+datatype float32
+alphachan -1
+nchannels 3
+nfaces 2
+hasmipmaps 1
+face 0 res 7 7 adjfaces -1 -1 -1 -1 adjedges 0 0 0 0 flags 0
+face 1 res 5 5 adjfaces -1 -1 -1 -1 adjedges 0 0 0 0 flags 0
