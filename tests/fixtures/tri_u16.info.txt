@@ -1,0 +1,10 @@
+meshtype triangle
+datatype uint16
+alphachan -1
+nchannels 1
+nfaces 4
+hasmipmaps 1
+face 0 res 5 5 adjfaces -1 -1 -1 -1 adjedges 0 0 0 0 flags 0
+face 1 res 4 4 adjfaces -1 -1 -1 -1 adjedges 0 0 0 0 flags 0
+face 2 res 6 6 adjfaces -1 -1 -1 -1 adjedges 0 0 0 0 flags 0
+face 3 res 2 2 adjfaces -1 -1 -1 -1 adjedges 0 0 0 0 flags 0

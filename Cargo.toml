@@ -1,0 +1,16 @@
+[package]
+name = "ptex-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Pure-Rust reader for Disney's Ptex per-face texture file format"
+license = "MIT"
+repository = "https://github.com/doubleailes/ptex-rs"
+keywords = ["ptex", "texture", "graphics", "vfx"]
+categories = ["graphics", "parser-implementations", "rendering::data-formats"]
+
+[lib]
+name = "ptex"
+
+[dependencies]
+flate2 = "1"
