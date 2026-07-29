@@ -164,7 +164,7 @@ pub fn gen_rfaceids(faces: &[FaceInfo]) -> Vec<u32> {
     };
     // stable sort by smaller dimension (u or v) in descending order;
     // constant faces are treated as having a res of 1
-    faceids.sort_by(|&a, &b| key(b).cmp(&key(a)));
+    faceids.sort_by_key(|&id| std::cmp::Reverse(key(id)));
 
     let mut rfaceids = vec![0u32; nfaces];
     for (rfaceid, &faceid) in faceids.iter().enumerate() {
