@@ -44,7 +44,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ptex-rs"
+name = "ptex-rust"
 version = "0.1.0"
 dependencies = [
  "flate2",
