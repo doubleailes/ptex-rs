@@ -166,7 +166,10 @@ is required to match byte-for-byte.
 `tests/tiles.rs` and `tests/shared.rs` build on that guarantee: for every
 fixture, face and level, tiles fetched individually and reassembled must
 equal the whole-face read, and `SharedReader` must agree with `PtexReader`
-under every cache budget and across threads.
+under every cache budget and across threads. The `quad_tiled` fixture is a
+1024x512 face that the writer splits into a 4x2 grid of tiles and whose
+first mipmap level is tiled too; its face data would be half a megabyte, so
+only the `.ptx` and a dense grid of reference pixel samples are committed.
 
 ## License
 

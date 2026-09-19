@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use ptex::{CacheOptions, Error, PtexReader, Res, SharedReader};
 
-const FIXTURES: [&str; 4] = ["quad_u8", "quad_f32", "quad_f16", "tri_u16"];
+const FIXTURES: [&str; 5] = ["quad_u8", "quad_f32", "quad_f16", "tri_u16", "quad_tiled"];
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

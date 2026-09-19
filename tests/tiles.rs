@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use ptex::{Error, PtexReader, Res};
 
-const FIXTURES: [&str; 4] = ["quad_u8", "quad_f32", "quad_f16", "tri_u16"];
+const FIXTURES: [&str; 5] = ["quad_u8", "quad_f32", "quad_f16", "tri_u16", "quad_tiled"];
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -312,4 +312,93 @@ fn get_pixel_agrees_with_streamed_tiles() {
             }
         }
     }
+}
+
+/// `quad_tiled` is the fixture with a real tile grid: face 0 is 1024x512,
+/// which the writer splits into a 4x2 grid of 256x256 tiles, and whose first
+/// reduction level is itself split into a 2x1 grid.  No other fixture has
+/// more than one tile column, or a tiled mipmap level.
+#[test]
+fn multi_column_tile_grid_and_tiled_mip_level() {
+    let mut tx = open("quad_tiled");
+    assert_eq!(tx.face_info(0).unwrap().res, Res::new(10, 9));
+
+    let l0 = tx.res_for_level(0, 0).unwrap();
+    let grid = tx.tile_layout(0, l0).unwrap();
+    assert!(grid.is_tiled && grid.is_stored);
+    assert_eq!(grid.tile_res, Res::new(8, 8));
+    assert_eq!((grid.ntilesu, grid.ntilesv), (4, 2));
+    assert_eq!(grid.ntiles(), 8);
+
+    // v-major numbering, with real horizontal offsets
+    assert_eq!(grid.tile_origin(0), (0, 0));
+    assert_eq!(grid.tile_origin(3), (768, 0));
+    assert_eq!(grid.tile_origin(4), (0, 256));
+    assert_eq!(grid.tile_origin(7), (768, 256));
+    assert_eq!(grid.tile_index(768, 256), 7);
+    assert_eq!(grid.tile_coords(6), (2, 1));
+
+    // the mipmap level below it is tiled too
+    let l1 = tx.res_for_level(0, 1).unwrap();
+    assert_eq!(l1, Res::new(9, 8));
+    let mip = tx.tile_layout(0, l1).unwrap();
+    assert!(mip.is_tiled && mip.is_stored);
+    assert_eq!(mip.tile_res, Res::new(8, 8));
+    assert_eq!((mip.ntilesu, mip.ntilesv), (2, 1));
+
+    // ... and deeper levels fall back to a single tile
+    let l2 = tx.res_for_level(0, 2).unwrap();
+    assert!(!tx.tile_layout(0, l2).unwrap().is_tiled);
+
+    // every tile of both tiled levels sits where the layout says it does
+    for (res, layout) in [(l0, grid), (l1, mip)] {
+        let face = tx.get_data_at_res(0, res).unwrap();
+        let psize = tx.pixel_size();
+        let rowlen = layout.tile_res.u() * psize;
+        for tile in 0..layout.ntiles() {
+            let data = tx.get_tile(0, res, tile).unwrap();
+            let (ou, ov) = layout.tile_origin(tile);
+            for v in 0..layout.tile_res.v() {
+                let src = (ov + v) * res.u() * psize + ou * psize;
+                assert_eq!(
+                    &data[v * rowlen..(v + 1) * rowlen],
+                    &face[src..src + rowlen],
+                    "level {}x{} tile {tile} row {v}",
+                    res.u(),
+                    res.v()
+                );
+            }
+        }
+    }
+}
+
+/// Cross-check the tiled fixture's decoded pixels against the values the C++
+/// reference reader produced, sampled densely enough to land inside every
+/// tile of the 4x2 grid.
+#[test]
+fn quad_tiled_pixels_match_the_reference() {
+    let mut tx = open("quad_tiled");
+    let nchan = tx.num_channels();
+    let samples = std::fs::read_to_string(fixture("quad_tiled.pixels.txt")).unwrap();
+    let mut seen = std::collections::HashSet::new();
+    let mut count = 0;
+    for line in samples.lines() {
+        let mut it = line.split_whitespace();
+        let f: usize = it.next().unwrap().parse().unwrap();
+        let u: usize = it.next().unwrap().parse().unwrap();
+        let v: usize = it.next().unwrap().parse().unwrap();
+        let expected: Vec<f32> = it.map(|t| t.parse().unwrap()).collect();
+        assert_eq!(
+            tx.get_pixel(f, u, v, 0, nchan).unwrap(),
+            expected,
+            "face {f} texel ({u},{v})"
+        );
+        if f == 0 {
+            let res = tx.face_info(0).unwrap().res;
+            seen.insert(tx.tile_layout(0, res).unwrap().tile_index(u, v));
+        }
+        count += 1;
+    }
+    assert!(count > 100, "expected a dense sample set, got {count}");
+    assert_eq!(seen.len(), 8, "samples must reach every tile of face 0");
 }

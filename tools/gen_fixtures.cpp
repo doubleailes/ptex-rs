@@ -142,6 +142,33 @@ static void writeTriU16(const char* path) {
     if (!w->close(err)) fatal(err.c_str());
 }
 
+// A single-channel uint8 face big enough that the writer tiles it in both
+// directions, and whose first mipmap level is tiled too.
+//
+// PtexWriter tiles a face whose uncompressed data exceeds TileSize (64 KB).
+// 1024x512x1B = 512 KB gives 8 tiles in a 4x2 grid at level 0, and the
+// 512x256 = 128 KB reduction level gives 2 more in a 2x1 grid - neither of
+// which the other fixtures exercise (quad_f32 has a single 1x2 grid and no
+// tiled reduction).
+static void writeQuadTiled(const char* path) {
+    Ptex::String err;
+    const int nfaces = 2;
+    PtexPtr<PtexWriter> w(PtexWriter::open(path, mt_quad, dt_uint8, 1, -1, nfaces, err));
+    if (!w) fatal(err.c_str());
+
+    Res res[nfaces] = { Res(10, 9), Res(3, 3) };
+    for (int f = 0; f < nfaces; f++) {
+        FaceInfo fi(res[f]);
+        int uw = res[f].u(), vw = res[f].v();
+        std::vector<uint8_t> data((size_t)uw * vw);
+        for (int v = 0; v < vw; v++)
+            for (int u = 0; u < uw; u++)
+                data[(size_t)v * uw + u] = u8val(f, 0, u, v);
+        if (!w->writeFace(f, fi, &data[0])) fatal("writeFace");
+    }
+    if (!w->close(err)) fatal(err.c_str());
+}
+
 static void dumpMeta(FILE* out, PtexMetaData* meta) {
     for (int i = 0; i < meta->numKeys(); i++) {
         const char* key;
@@ -190,11 +217,7 @@ static void dumpMeta(FILE* out, PtexMetaData* meta) {
     }
 }
 
-static void dump(const char* path, const char* base) {
-    Ptex::String err;
-    PtexPtr<PtexTexture> tx(PtexTexture::open(path, err, /*premultiply*/ false));
-    if (!tx) fatal(err.c_str());
-
+static void dumpInfo(PtexTexture* tx, const char* base) {
     std::string infopath = std::string(base) + ".info.txt";
     FILE* info = fopen(infopath.c_str(), "w");
     if (!info) fatal("open info");
@@ -215,6 +238,13 @@ static void dump(const char* path, const char* base) {
     PtexPtr<PtexMetaData> meta(tx->getMetaData());
     if (meta) dumpMeta(info, meta);
     fclose(info);
+}
+
+static void dump(const char* path, const char* base) {
+    Ptex::String err;
+    PtexPtr<PtexTexture> tx(PtexTexture::open(path, err, /*premultiply*/ false));
+    if (!tx) fatal(err.c_str());
+    dumpInfo(tx, base);
 
     int psize = tx->numChannels() * DataSize(tx->dataType());
 
@@ -295,21 +325,59 @@ static void dump(const char* path, const char* base) {
     fclose(pix);
 }
 
+// The tiled fixture's face data is half a megabyte, too big to commit, so
+// only the header info and a dense grid of pixel samples - many inside every
+// tile - are recorded.  The Rust tests verify the tile path by reassembling
+// tiles and comparing against the whole-face read, and verify the decode
+// itself against these samples.
+static void dumpTiled(const char* path, const char* base) {
+    Ptex::String err;
+    PtexPtr<PtexTexture> tx(PtexTexture::open(path, err, /*premultiply*/ false));
+    if (!tx) fatal(err.c_str());
+    dumpInfo(tx, base);
+
+    std::string pixpath = std::string(base) + ".pixels.txt";
+    FILE* pix = fopen(pixpath.c_str(), "w");
+    if (!pix) fatal("open pixels");
+    int nchan = tx->numChannels();
+    std::vector<float> result(nchan);
+    for (int f = 0; f < tx->numFaces(); f++) {
+        const FaceInfo& fi = tx->getFaceInfo(f);
+        int uw = fi.res.u(), vw = fi.res.v();
+        int ustep = uw > 16 ? uw / 16 : 1;
+        int vstep = vw > 16 ? vw / 16 : 1;
+        for (int v = 0; v < vw; v += vstep) {
+            for (int u = 0; u < uw; u += ustep) {
+                tx->getPixel(f, u, v, &result[0], 0, nchan);
+                fprintf(pix, "%d %d %d", f, u, v);
+                for (int c = 0; c < nchan; c++) fprintf(pix, " %.9g", result[c]);
+                fprintf(pix, "\n");
+            }
+        }
+    }
+    fclose(pix);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) fatal("usage: gen_fixtures <outdir>");
     std::string dir = argv[1];
 
-    struct { const char* name; void (*write)(const char*); } fixtures[] = {
-        { "quad_u8", writeQuadU8 },
-        { "quad_f32", writeQuadF32 },
-        { "quad_f16", writeQuadF16 },
-        { "tri_u16", writeTriU16 },
+    struct {
+        const char* name;
+        void (*write)(const char*);
+        void (*dump)(const char*, const char*);
+    } fixtures[] = {
+        { "quad_u8", writeQuadU8, dump },
+        { "quad_f32", writeQuadF32, dump },
+        { "quad_f16", writeQuadF16, dump },
+        { "tri_u16", writeTriU16, dump },
+        { "quad_tiled", writeQuadTiled, dumpTiled },
     };
     for (auto& fx : fixtures) {
         std::string ptx = dir + "/" + fx.name + ".ptx";
         std::string base = dir + "/" + fx.name;
         fx.write(ptx.c_str());
-        dump(ptx.c_str(), base.c_str());
+        fx.dump(ptx.c_str(), base.c_str());
         printf("wrote %s\n", ptx.c_str());
     }
     return 0;
