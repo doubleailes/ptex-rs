@@ -38,6 +38,8 @@
 
 #![warn(missing_docs)]
 
+#[cfg(feature = "cache")]
+mod cache;
 mod decode;
 mod error;
 mod file_info;
@@ -48,6 +50,8 @@ mod tile;
 mod types;
 pub mod utils;
 
+#[cfg(feature = "cache")]
+pub use cache::{CacheOptions, CacheStats, PixelData, SharedReader, DEFAULT_CACHE_BUDGET};
 pub use error::{Error, Result};
 pub use metadata::{MetaData, MetaDataEntry};
 pub use reader::PtexReader;

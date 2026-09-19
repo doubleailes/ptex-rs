@@ -12,5 +12,14 @@ categories = ["graphics", "parser-implementations", "rendering::data-formats"]
 [lib]
 name = "ptex"
 
+[features]
+default = ["cache"]
+# Thread-safe `SharedReader` with a byte-budgeted cache of decoded pixels.
+cache = ["dep:lru"]
+
 [dependencies]
 flate2 = "1"
+# 0.12 is the last line that keeps the crate's 1.70 MSRV (0.18 requires
+# 1.85); with default features off it drops hashbrown and uses std's HashMap,
+# so this adds no transitive dependencies.
+lru = { version = "0.12", default-features = false, optional = true }
