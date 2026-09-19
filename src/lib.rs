@@ -38,16 +38,20 @@
 
 #![warn(missing_docs)]
 
+mod decode;
 mod error;
+mod file_info;
 mod format;
 mod metadata;
 mod reader;
+mod tile;
 mod types;
 pub mod utils;
 
 pub use error::{Error, Result};
 pub use metadata::{MetaData, MetaDataEntry};
 pub use reader::PtexReader;
+pub use tile::{TileInfo, TileLayout};
 pub use types::{
     face_flags, float_to_half, half_to_float, BorderMode, DataType, EdgeFilterMode, EdgeId,
     FaceInfo, MeshType, MetaDataType, Res,
