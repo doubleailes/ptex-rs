@@ -24,6 +24,13 @@ pub enum Error {
         /// The number of faces in the file.
         nfaces: u32,
     },
+    /// A tile index is out of range for the requested face and resolution.
+    TileOutOfRange {
+        /// The requested tile index.
+        tile: usize,
+        /// The number of tiles the face has at that resolution.
+        ntiles: usize,
+    },
     /// The requested operation is not supported.
     Unsupported(String),
 }
@@ -40,6 +47,10 @@ impl fmt::Display for Error {
             Error::FaceOutOfRange { faceid, nfaces } => {
                 write!(f, "face id {faceid} out of range (file has {nfaces} faces)")
             }
+            Error::TileOutOfRange { tile, ntiles } => write!(
+                f,
+                "tile index {tile} out of range (face has {ntiles} tiles at this resolution)"
+            ),
             Error::Unsupported(msg) => write!(f, "unsupported operation: {msg}"),
         }
     }
