@@ -375,17 +375,22 @@ impl<R: Read + Seek> PtexReader<R> {
             return Err(Error::TileOutOfRange { tile, ntiles });
         }
         let origin = layout.tile_origin(tile);
-        if !layout.is_stored || layout.is_constant {
-            return Ok(TileInfo {
-                res: layout.tile_res,
-                origin,
-                is_constant: layout.is_constant,
-                compressed_size: 0,
-                file_offset: None,
-            });
-        }
-        let FaceSource::Stored { levelid, facepos } = self.info.resolve(faceid, res)? else {
-            return Err(Error::Corrupt("inconsistent tile layout".into()));
+        // Only a constant *face*, whose value lives once in the file's
+        // constant-data block, and a resolution computed by reduction have
+        // no block of their own.  A stored block that merely uses the
+        // constant encoding has a header and a file position like any
+        // other, and reports them below.
+        let (levelid, facepos) = match self.info.resolve(faceid, res)? {
+            FaceSource::Stored { levelid, facepos } => (levelid, facepos),
+            FaceSource::Constant | FaceSource::Reduced => {
+                return Ok(TileInfo {
+                    res: layout.tile_res,
+                    origin,
+                    is_constant: layout.is_constant,
+                    compressed_size: 0,
+                    file_offset: None,
+                });
+            }
         };
         let (fdh, pos) = self.level_entry(levelid, facepos)?;
         let (fdh, pos) = if layout.is_tiled {
@@ -597,6 +602,19 @@ impl<R: Read + Seek> PtexReader<R> {
         let pixel_size = self.info.pixel_size;
         match fdh.encoding() {
             Encoding::Constant => {
+                // A constant block carries exactly one pixel.  A level entry
+                // that claims fewer bytes belongs to a face flagged constant,
+                // whose value lives in the file's constant-data block and
+                // which occupies no level data at all: its offset is that of
+                // the *next* block, so reading here would silently yield that
+                // block's bytes.  `FileInfo::resolve` sends such faces to the
+                // constant-data block, so reaching this point means the flag
+                // and the level entry disagree.
+                if (fdh.blocksize() as usize) < pixel_size {
+                    return Err(Error::Corrupt(
+                        "constant block smaller than one pixel".into(),
+                    ));
+                }
                 let raw = self.read_raw(pos, pixel_size)?;
                 let pixel = decode::decode_constant(&raw, &self.info, levelid);
                 utils::fill(&pixel, dst, stride, res.u(), res.v(), pixel_size);
