@@ -12,6 +12,15 @@
 //!   reductions for resolutions not stored in the file
 //! - meta data (including large meta data blocks)
 //!
+//! Faces larger than 64 KB are stored as independently compressed tiles,
+//! and [`PtexReader`] exposes them: [`PtexReader::tile_layout`] describes
+//! how a face is laid out at a chosen resolution and
+//! [`PtexReader::get_tile`] reads one tile, so a render engine can stream
+//! exactly what it needs instead of materializing whole faces.  For reading
+//! from several threads against one open file, with a bounded cache of
+//! decoded pixels, see [`SharedReader`] (enabled by the default `cache`
+//! feature).
+//!
 //! Writing and filtered sampling are out of scope for now.
 //!
 //! # Example
@@ -31,6 +40,20 @@
 //!     let data = tx.get_data(faceid)?; // interleaved pixels, v-major
 //!     println!("face {faceid}: {}x{} -> {} bytes", info.res.u(), info.res.v(), data.len());
 //! }
+//! # Ok::<(), ptex::Error>(())
+//! ```
+//!
+//! # Streaming one tile of one mipmap level
+//!
+//! ```no_run
+//! use ptex::PtexReader;
+//!
+//! let mut tx = PtexReader::open("teapot.ptx")?;
+//! let res = tx.res_for_level(0, 2)?;            // two levels down
+//! let layout = tx.tile_layout(0, res)?;         // one tile if untiled
+//! let tile = layout.tile_index(96, 40);         // the tile holding a texel
+//! let pixels = tx.get_tile(0, res, tile)?;      // one seek, one inflate
+//! println!("{} bytes for {}x{}", pixels.len(), layout.tile_res.u(), layout.tile_res.v());
 //! # Ok::<(), ptex::Error>(())
 //! ```
 //!
