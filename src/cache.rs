@@ -634,17 +634,22 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             return Err(Error::TileOutOfRange { tile, ntiles });
         }
         let origin = layout.tile_origin(tile);
-        if !layout.is_stored || layout.is_constant {
-            return Ok(TileInfo {
-                res: layout.tile_res,
-                origin,
-                is_constant: layout.is_constant,
-                compressed_size: 0,
-                file_offset: None,
-            });
-        }
-        let FaceSource::Stored { levelid, facepos } = self.inner.info.resolve(faceid, res)? else {
-            return Err(Error::Corrupt("inconsistent tile layout".into()));
+        // Only a constant *face*, whose value lives once in the file's
+        // constant-data block, and a resolution computed by reduction have
+        // no block of their own.  A stored block that merely uses the
+        // constant encoding has a header and a file position like any
+        // other, and reports them below.
+        let (levelid, facepos) = match self.inner.info.resolve(faceid, res)? {
+            FaceSource::Stored { levelid, facepos } => (levelid, facepos),
+            FaceSource::Constant | FaceSource::Reduced => {
+                return Ok(TileInfo {
+                    res: layout.tile_res,
+                    origin,
+                    is_constant: layout.is_constant,
+                    compressed_size: 0,
+                    file_offset: None,
+                });
+            }
         };
         let (fdh, pos) = self.level_entry(levelid, facepos)?;
         let (fdh, pos) = if layout.is_tiled {
@@ -833,6 +838,14 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         let key = CacheKey::Block { pos };
         match fdh.encoding() {
             Encoding::Constant => {
+                // A constant block carries exactly one pixel; see the same
+                // guard in `PtexReader::read_block_into` for why a shorter
+                // one cannot be read from here.
+                if (fdh.blocksize() as usize) < self.inner.info.pixel_size {
+                    return Err(Error::Corrupt(
+                        "constant block smaller than one pixel".into(),
+                    ));
+                }
                 // Cheap to reproduce and potentially huge once expanded, so
                 // constant blocks are never cached.
                 let raw = self.read_raw(pos, self.inner.info.pixel_size)?;

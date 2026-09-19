@@ -23,3 +23,7 @@ flate2 = "1"
 # 1.85); with default features off it drops hashbrown and uses std's HashMap,
 # so this adds no transitive dependencies.
 lru = { version = "0.12", default-features = false, optional = true }
+
+[dev-dependencies]
+# Already a normal dependency; used by tests that hand-build .ptx files.
+flate2 = "1"
