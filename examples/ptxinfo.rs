@@ -42,6 +42,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "edgeFilterMode: {}", tx.edge_filter_mode().name())?;
     writeln!(out, "numFaces: {}", tx.num_faces())?;
     writeln!(out, "hasMipMaps: {}", tx.has_mip_maps())?;
+    writeln!(
+        out,
+        "hasEdits: {}{}",
+        tx.has_edits(),
+        if tx.has_edits() {
+            "  (edit blocks are NOT applied by this reader)"
+        } else {
+            ""
+        }
+    )?;
 
     writeln!(out, "faceinfo:")?;
     for f in 0..tx.num_faces() {
