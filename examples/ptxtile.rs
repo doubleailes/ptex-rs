@@ -8,6 +8,7 @@
 //! tiling is summarised; with a tile index, that one tile's pixels are read
 //! and its first few texels printed.
 
+use std::io::Write;
 use std::process::ExitCode;
 
 use ptex::PtexReader;
@@ -24,6 +25,11 @@ fn main() -> ExitCode {
 
     match run(&path, faceid, level, tile) {
         Ok(()) => ExitCode::SUCCESS,
+        // A closed pipe (`ptxtile ... | head`) is a normal way for a reader to
+        // stop listening, not a failure.  Rust ignores SIGPIPE, so the print
+        // macros would panic here instead; writing through `?` lets us exit
+        // quietly.
+        Err(ptex::Error::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{path}: {e}");
             ExitCode::FAILURE
@@ -32,13 +38,15 @@ fn main() -> ExitCode {
 }
 
 fn run(path: &str, faceid: usize, level: usize, tile: Option<usize>) -> ptex::Result<()> {
+    let mut out = std::io::stdout().lock();
     let mut tx = PtexReader::open(path)?;
     let nlevels = tx.face_num_levels(faceid)?;
     let stored = tx.num_stored_levels(faceid)?;
-    println!(
+    writeln!(
+        out,
         "face {faceid}: {} levels ({stored} stored in the file)",
         nlevels
-    );
+    )?;
     if level >= nlevels {
         return Err(ptex::Error::Unsupported(format!(
             "face {faceid} has only {nlevels} levels"
@@ -47,7 +55,8 @@ fn run(path: &str, faceid: usize, level: usize, tile: Option<usize>) -> ptex::Re
 
     let res = tx.res_for_level(faceid, level)?;
     let layout = tx.tile_layout(faceid, res)?;
-    println!(
+    writeln!(
+        out,
         "level {level}: {}x{}  {}  tiles {}x{} of {}x{}",
         res.u(),
         res.v(),
@@ -60,20 +69,21 @@ fn run(path: &str, faceid: usize, level: usize, tile: Option<usize>) -> ptex::Re
         layout.ntilesv,
         layout.tile_res.u(),
         layout.tile_res.v(),
-    );
+    )?;
 
     let Some(tile) = tile else {
         for t in 0..layout.ntiles() {
             let info = tx.tile_info(faceid, res, t)?;
             let (u, v) = info.origin;
             match info.file_offset {
-                Some(off) => println!(
+                Some(off) => writeln!(
+                    out,
                     "  tile {t}: origin ({u},{v}) at file offset {off}, \
                      {} compressed bytes{}",
                     info.compressed_size,
                     if info.is_constant { ", constant" } else { "" }
-                ),
-                None => println!("  tile {t}: origin ({u},{v}), not stored"),
+                )?,
+                None => writeln!(out, "  tile {t}: origin ({u},{v}), not stored")?,
             }
         }
         return Ok(());
@@ -82,12 +92,13 @@ fn run(path: &str, faceid: usize, level: usize, tile: Option<usize>) -> ptex::Re
     // Read only this tile: one seek and one inflate, whatever the face size.
     let data = tx.get_tile(faceid, res, tile)?;
     let (u, v) = layout.tile_origin(tile);
-    println!(
+    writeln!(
+        out,
         "tile {tile}: origin ({u},{v}), {}x{}, {} bytes",
         layout.tile_res.u(),
         layout.tile_res.v(),
         data.len()
-    );
+    )?;
 
     let nchan = tx.num_channels();
     let dt = tx.data_type();
@@ -96,7 +107,7 @@ fn run(path: &str, faceid: usize, level: usize, tile: Option<usize>) -> ptex::Re
         let mut texel = vec![0f32; nchan];
         ptex::utils::convert_to_float(&mut texel, &data[i * psize..], dt, nchan);
         let values: Vec<String> = texel.iter().map(|c| format!("{c:.4}")).collect();
-        println!("  texel {i}: {}", values.join(" "));
+        writeln!(out, "  texel {i}: {}", values.join(" "))?;
     }
     Ok(())
 }
