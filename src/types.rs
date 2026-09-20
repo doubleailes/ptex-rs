@@ -319,7 +319,15 @@ impl Res {
 pub mod face_flags {
     /// Face is constant (a single color).
     pub const CONSTANT: u8 = 1;
-    /// Obsolete flag (formerly "has edits").
+    /// The face has been modified by an edit block appended to the file.
+    ///
+    /// This crate does not apply edit blocks, so a face carrying this flag
+    /// reads back as it was before the edit; see [`crate::PtexReader::has_edits`].
+    pub const HAS_EDITS: u8 = 2;
+    /// Former name of [`HAS_EDITS`], which this crate previously documented
+    /// as obsolete.  It is the `flag_hasedits` bit of the C++ library and is
+    /// still in use.
+    #[deprecated(since = "0.2.0", note = "renamed to `HAS_EDITS`")]
     pub const OBSOLETE: u8 = 2;
     /// The face and all its neighbors are constant with the same color.
     pub const NEIGHBORHOOD_CONSTANT: u8 = 4;
@@ -389,6 +397,15 @@ impl FaceInfo {
     /// Determine if the face is a subface (by checking a flag).
     pub fn is_subface(&self) -> bool {
         self.flags & face_flags::SUBFACE != 0
+    }
+
+    /// Determine if the face was modified by an edit block (by checking a
+    /// flag).
+    ///
+    /// Edit blocks are not applied by this crate, so the data read for such
+    /// a face is its pre-edit state; see [`crate::PtexReader::has_edits`].
+    pub fn has_edits(&self) -> bool {
+        self.flags & face_flags::HAS_EDITS != 0
     }
 }
 

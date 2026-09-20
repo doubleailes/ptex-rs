@@ -119,6 +119,27 @@ impl<R: Read + Seek> PtexReader<R> {
         self.info.header.has_alpha()
     }
 
+    /// True if the file carries edit blocks appended after the main data.
+    ///
+    /// Ptex files can be modified after the fact by appending edit records
+    /// rather than rewriting the file.  **This crate does not apply them**:
+    /// when this returns true, everything an edit can touch reads back as it
+    /// was before the edit — the pixel data of edited faces, their constant
+    /// values, their [`FaceInfo`] (an edit replaces the whole record, so even
+    /// the resolution and adjacency may be stale), and meta data, which edits
+    /// can override and add to.  None of that matches what the C++ library
+    /// returns for the same file.
+    ///
+    /// Note that edits patch only the full-resolution data, so the stored
+    /// mipmap levels of an edited file are stale in the original library
+    /// too; it works around that by recomputing reductions for edited faces
+    /// (see [`FaceInfo::has_edits`]).
+    ///
+    /// Answered from the header, with no I/O.
+    pub fn has_edits(&self) -> bool {
+        self.info.has_edits()
+    }
+
     /// True if the file stores precomputed mipmap (reduction) levels.
     pub fn has_mip_maps(&self) -> bool {
         self.info.num_levels() > 1

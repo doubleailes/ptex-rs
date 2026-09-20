@@ -58,6 +58,9 @@ pub(crate) struct FileInfo {
     pub metadata_pos: u64,
     pub lmdheader_pos: u64,
 
+    /// True if the file carries edit blocks appended after the main data.
+    pub has_edits: bool,
+
     pub face_info: Vec<FaceInfo>,
     pub rfaceids: Vec<u32>,
     pub const_data: Vec<u8>,
@@ -104,6 +107,33 @@ impl FileInfo {
         pos += header.metadatazipsize as u64;
         pos += 8; // compatibility barrier
         let lmdheader_pos = pos;
+        pos += ext_header.lmdheaderzipsize as u64;
+        pos += ext_header.lmddatasize;
+
+        // Edit blocks are appended after everything else.  Mirroring
+        // `PtexReader::readEditData`: newer files record the position and
+        // size in the extended header, and a position is written even when
+        // the size is zero; older files have neither, and their edits (if
+        // any) run from the end of the large meta data to the end of the
+        // file.
+        let has_edits = if ext_header.editdatapos > 0 {
+            ext_header.editdatasize > 0
+        } else {
+            // Older file: no recorded extent, so look for a well-formed
+            // record where the large meta data ends.  A record is a 1-byte
+            // type and a 4-byte size; the reference reader stops at the
+            // first zero size, so trailing padding does not count as an
+            // edit.
+            let end = io.seek(SeekFrom::End(0))?;
+            if end >= pos + 5 {
+                io.seek(SeekFrom::Start(pos + 1))?;
+                let mut size = [0u8; 4];
+                io.read_exact(&mut size)?;
+                u32::from_le_bytes(size) != 0
+            } else {
+                false
+            }
+        };
 
         // face info table
         let nfaces = header.nfaces as usize;
@@ -157,6 +187,7 @@ impl FileInfo {
             pixel_size,
             metadata_pos,
             lmdheader_pos,
+            has_edits,
             face_info,
             rfaceids,
             const_data,
@@ -175,6 +206,11 @@ impl FileInfo {
 
     pub fn num_levels(&self) -> usize {
         self.header.nlevels as usize
+    }
+
+    /// True if edit blocks are appended after the main data.
+    pub fn has_edits(&self) -> bool {
+        self.has_edits
     }
 
     pub fn u_border_mode(&self) -> BorderMode {
@@ -239,7 +275,7 @@ impl FileInfo {
         if redu == 0 && redv == 0 {
             return Ok(faceid < self.level_nfaces(0));
         }
-        if redu == redv && redu > 0 && (redu as usize) < self.num_levels() {
+        if redu == redv && redu > 0 && !fi.has_edits() && (redu as usize) < self.num_levels() {
             let levelid = redu as usize;
             return Ok((self.rfaceids[faceid] as usize) < self.level_nfaces(levelid));
         }
@@ -292,7 +328,14 @@ impl FileInfo {
             return Err(Error::Corrupt("face missing from level 0".into()));
         }
 
-        if redu == redv && redu > 0 && (redu as usize) < self.num_levels() {
+        // The C++ reader also skips stored reductions for a face carrying the
+        // "has edits" flag, because an edit patches level 0 only and leaves
+        // the mipmaps stale.  That flag is never written to disk — the
+        // reference reader sets it in memory while replaying the edit section
+        // — so with edit blocks unsupported here it is always clear and this
+        // condition cannot fire.  It is kept so the routing is already right
+        // if edits are ever applied.
+        if redu == redv && redu > 0 && !fi.has_edits() && (redu as usize) < self.num_levels() {
             // symmetric reduction - it may be stored on disk
             let levelid = redu as usize;
             let facepos = self.rfaceids[faceid] as usize;

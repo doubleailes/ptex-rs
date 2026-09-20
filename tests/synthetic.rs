@@ -190,3 +190,133 @@ mod shared {
         }
     }
 }
+
+/// A minimal one-face file used to exercise edit-block detection.
+///
+/// With `ext_header`, a full 40-byte extended header is written declaring
+/// `editdatasize` and an `editdatapos` pointing just past the main data —
+/// the shape modern files have. Without it, `extheadersize` is 0, so both
+/// fields read as zero and a reader must fall back to looking for trailing
+/// bytes, which is how the C++ reader handles older files. `trailing` bytes
+/// are appended after the main data either way.
+fn ptx_with_edits(ext_header: bool, editdatasize: u64, trailing: usize) -> Vec<u8> {
+    let mut fi = vec![1u8, 1, 0, 0];
+    for _ in 0..4 {
+        fi.extend_from_slice(&(-1i32).to_le_bytes());
+    }
+    let faceinfo = zlib(&fi);
+    let constdata = zlib(&[0x11]);
+    let levelheader = zlib(&(PIXEL_SIZE as u32).to_le_bytes());
+    let mut leveldata = levelheader.clone();
+    leveldata.push(0x22);
+    let mut levelinfo = Vec::new();
+    levelinfo.extend_from_slice(&(leveldata.len() as u64).to_le_bytes());
+    levelinfo.extend_from_slice(&(levelheader.len() as u32).to_le_bytes());
+    levelinfo.extend_from_slice(&1u32.to_le_bytes());
+
+    let ehs = if ext_header { 40usize } else { 0 };
+    // 8 = the compatibility barrier that follows the meta data block
+    let end_of_main =
+        (64 + ehs + faceinfo.len() + constdata.len() + levelinfo.len() + leveldata.len() + 8)
+            as u64;
+
+    let mut header = vec![0u8; 64];
+    header[0..4].copy_from_slice(b"Ptex");
+    put_u32(&mut header, 4, 1);
+    put_u32(&mut header, 8, 1);
+    put_u32(&mut header, 12, 0);
+    put_u32(&mut header, 16, (-1i32) as u32);
+    header[20..22].copy_from_slice(&1u16.to_le_bytes());
+    header[22..24].copy_from_slice(&1u16.to_le_bytes());
+    put_u32(&mut header, 24, 1);
+    put_u32(&mut header, 28, ehs as u32);
+    put_u32(&mut header, 32, faceinfo.len() as u32);
+    put_u32(&mut header, 36, constdata.len() as u32);
+    put_u32(&mut header, 40, levelinfo.len() as u32);
+    header[48..56].copy_from_slice(&(leveldata.len() as u64).to_le_bytes());
+
+    let mut file = header;
+    if ext_header {
+        let mut e = vec![0u8; 40];
+        e[24..32].copy_from_slice(&editdatasize.to_le_bytes());
+        e[32..40].copy_from_slice(&end_of_main.to_le_bytes());
+        file.extend_from_slice(&e);
+    }
+    file.extend_from_slice(&faceinfo);
+    file.extend_from_slice(&constdata);
+    file.extend_from_slice(&levelinfo);
+    file.extend_from_slice(&leveldata);
+    file.extend_from_slice(&[0xeeu8; 8]); // compatibility barrier
+    assert_eq!(file.len() as u64, end_of_main);
+    file.extend(std::iter::repeat(0xedu8).take(trailing));
+    file
+}
+
+/// A modern file records the edit extent in its extended header. Note that
+/// `editdatapos` is non-zero even when there are no edits, so the size is
+/// what decides.
+#[test]
+fn declared_edit_data_is_detected() {
+    let none = ptx_with_edits(true, 0, 0);
+    assert!(!open(&none).has_edits());
+
+    let some = ptx_with_edits(true, 16, 16);
+    assert!(open(&some).has_edits());
+}
+
+/// An older file has neither field, so edits can only be found as bytes
+/// trailing the main data — the fallback the C++ reader uses.
+#[test]
+fn trailing_data_in_an_older_file_is_detected() {
+    let clean = ptx_with_edits(false, 0, 0);
+    assert!(!open(&clean).has_edits());
+
+    let edited = ptx_with_edits(false, 0, 24);
+    assert!(open(&edited).has_edits());
+
+    // A record whose size field is zero is where the reference reader stops,
+    // so trailing padding must not be mistaken for an edit.
+    let mut padded = ptx_with_edits(false, 0, 0);
+    padded.extend_from_slice(&[0u8; 16]);
+    assert!(!open(&padded).has_edits());
+
+    // Too few bytes to even hold a record preamble.
+    let mut stub = ptx_with_edits(false, 0, 0);
+    stub.extend_from_slice(&[0xed; 3]);
+    assert!(!open(&stub).has_edits());
+}
+
+#[test]
+fn face_flags_has_edits_reads_the_right_bit() {
+    use ptex::{face_flags, FaceInfo, Res};
+    let mut fi = FaceInfo {
+        res: Res::new(1, 1),
+        ..FaceInfo::default()
+    };
+    assert!(!fi.has_edits());
+    fi.flags = face_flags::HAS_EDITS;
+    assert!(fi.has_edits());
+    assert!(!fi.is_constant());
+    // the C++ bit layout: constant=1, hasedits=2, nbconstant=4, subface=8
+    assert_eq!(face_flags::HAS_EDITS, 2);
+}
+
+/// None of the fixtures are edited, and both readers must agree.
+#[test]
+fn fixtures_report_no_edits() {
+    for name in ["quad_u8", "quad_f32", "quad_f16", "tri_u16", "quad_tiled"] {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(format!("{name}.ptx"));
+        let tx = PtexReader::open(&path).unwrap();
+        assert!(!tx.has_edits(), "{name}");
+        for f in 0..tx.num_faces() {
+            assert!(!tx.face_info(f).unwrap().has_edits(), "{name} face {f}");
+        }
+        #[cfg(feature = "cache")]
+        assert!(
+            !ptex::SharedReader::open(&path).unwrap().has_edits(),
+            "{name}"
+        );
+    }
+}

@@ -28,7 +28,11 @@ file format — a port of the reading side of the original C++
   the default-on `cache` feature, is the only other one)
 
 Writing files and filtered sampling (`PtexFilter`) are out of scope for
-now.
+now. **Edit blocks are not applied**: Ptex files can be modified by
+appending edit records instead of being rewritten, and this reader ignores
+them, so an edited file reads back in its pre-edit state. `has_edits()`
+reports whether a file carries them, so a caller can refuse or fall back
+rather than silently using stale data.
 
 ## Usage
 

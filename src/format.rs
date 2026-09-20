@@ -85,8 +85,12 @@ pub struct ExtHeader {
     pub lmdheaderzipsize: u32,
     pub lmdheadermemsize: u32,
     pub lmddatasize: u64,
-    pub obsolete: u64,
-    pub obsolete2: u64,
+    /// Total size of the edit blocks appended after the main data, or 0 if
+    /// the file has never been edited.
+    pub editdatasize: u64,
+    /// Absolute file offset of the first edit block; equal to the file
+    /// length when there are no edits.
+    pub editdatapos: u64,
 }
 
 impl ExtHeader {
@@ -99,8 +103,8 @@ impl ExtHeader {
             lmdheaderzipsize: u32_at(b, 8),
             lmdheadermemsize: u32_at(b, 12),
             lmddatasize: u64_at(b, 16),
-            obsolete: u64_at(b, 24),
-            obsolete2: u64_at(b, 32),
+            editdatasize: u64_at(b, 24),
+            editdatapos: u64_at(b, 32),
         }
     }
 }
