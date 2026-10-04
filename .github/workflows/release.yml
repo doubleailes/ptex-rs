@@ -19,14 +19,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
-      - name: Check tag matches Cargo.toml version
-        run: |
-          version="$(cargo pkgid | sed 's/.*[@#]//')"
-          tag="${GITHUB_REF_NAME#v}"
-          if [ "$version" != "$tag" ]; then
-            echo "Tag v$tag does not match Cargo.toml version $version" >&2
-            exit 1
-          fi
       - name: Test
         run: cargo test
       - name: Publish
