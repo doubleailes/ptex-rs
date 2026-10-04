@@ -1,6 +1,6 @@
 [package]
 name = "ptex-rust"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Pure-Rust reader for Disney's Ptex per-face texture file format"
