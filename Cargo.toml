@@ -22,7 +22,7 @@ flate2 = "1"
 # 0.12 is the last line that keeps the crate's 1.70 MSRV (0.18 requires
 # 1.85); with default features off it drops hashbrown and uses std's HashMap,
 # so this adds no transitive dependencies.
-lru = { version = "0.12", default-features = false, optional = true }
+lru = { version = "0.18.2", default-features = false, optional = true }
 
 [dev-dependencies]
 # Already a normal dependency; used by tests that hand-build .ptx files.
