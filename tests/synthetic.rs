@@ -49,7 +49,7 @@ fn constant_block_ptx(blocksize: u32, block_pixel: u8, const_pixel: u8) -> (Vec<
     // one face data header: encoding bits 30..31 == 0 == constant
     let levelheader = zlib(&blocksize.to_le_bytes());
     let mut leveldata = levelheader.clone();
-    leveldata.extend(std::iter::repeat(block_pixel).take(blocksize as usize));
+    leveldata.extend(std::iter::repeat_n(block_pixel, blocksize as usize));
 
     let mut levelinfo = Vec::new();
     levelinfo.extend_from_slice(&(leveldata.len() as u64).to_le_bytes());
@@ -248,7 +248,7 @@ fn ptx_with_edits(ext_header: bool, editdatasize: u64, trailing: usize) -> Vec<u
     file.extend_from_slice(&leveldata);
     file.extend_from_slice(&[0xeeu8; 8]); // compatibility barrier
     assert_eq!(file.len() as u64, end_of_main);
-    file.extend(std::iter::repeat(0xedu8).take(trailing));
+    file.extend(std::iter::repeat_n(0xedu8, trailing));
     file
 }
 
