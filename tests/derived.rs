@@ -168,6 +168,67 @@ fn rederiving_after_eviction_is_deterministic() {
 }
 
 #[test]
+fn a_coarse_request_caches_only_the_level_asked_for() {
+    for name in FIXTURES {
+        let full = open(name, 4, 64 << 20);
+        let expected = chain(&full);
+        let tx = open(name, 4, 64 << 20);
+        let mut i = 0;
+        let mut blocks = 0;
+        let mut derives = 0;
+        for f in 0..tx.num_faces() {
+            let n = tx.derived_levels(f).unwrap();
+            // The coarsest level first: derived through the whole chain,
+            // which is not kept.
+            let coarse = tx.get_derived(f, n - 1).unwrap();
+            assert_eq!(&*coarse, &expected[i + n - 1][..], "{name} face {f}");
+            blocks += 1;
+            derives += n;
+            let s = tx.cache_stats();
+            assert_eq!(
+                s.derived_blocks, blocks,
+                "{name} face {f}: only the asked level"
+            );
+            assert_eq!(s.derives as usize, derives, "{name} face {f}");
+            // A finer level after it starts again from the base, and a level
+            // between the two then starts from that one.
+            if n >= 4 {
+                assert_eq!(&*tx.get_derived(f, 0).unwrap(), &expected[i][..]);
+                derives += 1;
+                assert_eq!(&*tx.get_derived(f, 2).unwrap(), &expected[i + 2][..]);
+                derives += 2;
+                blocks += 2;
+                let s = tx.cache_stats();
+                assert_eq!(s.derived_blocks, blocks, "{name} face {f}");
+                assert_eq!(s.derives as usize, derives, "{name} face {f}");
+            }
+            i += n;
+        }
+    }
+}
+
+#[test]
+fn the_base_block_read_to_derive_is_not_kept() {
+    // `quad_u8`'s faces are stored untiled at every level a cap of 4 reads,
+    // so the only cache entries a derived chain leaves are its own blocks.
+    let tx = open("quad_u8", 4, 64 << 20);
+    let expected = chain(&open("quad_u8", 4, 64 << 20));
+    assert_eq!(chain(&tx), expected);
+    let s = tx.cache_stats();
+    assert_eq!(s.entries, s.derived_blocks, "a raw base block was kept");
+    // A base block that *is* resident is used rather than read again.
+    let tx = open("quad_u8", 4, 64 << 20);
+    for f in 0..tx.num_faces() {
+        let base = tx.derived_base_res(f).unwrap();
+        tx.get_data_at_res(f, base).unwrap();
+    }
+    let before = tx.cache_stats();
+    assert_eq!(chain(&tx), expected);
+    let after = tx.cache_stats();
+    assert_eq!(after.entries - after.derived_blocks, before.entries);
+}
+
+#[test]
 fn derived_bytes_are_inside_the_budget() {
     for name in FIXTURES {
         let tx = open(name, 4, 64 << 20);
