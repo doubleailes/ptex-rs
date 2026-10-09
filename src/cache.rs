@@ -102,7 +102,8 @@ pub struct CacheStats {
 /// axis of level `k - 1` to a floor of one texel
 /// ([`SharedReader::derived_res`]) and is produced by
 /// [`derive`](Self::derive) from its parent alone, so **no derived level
-/// ever reads the file at a resolution finer than `base_res`**.  (The base
+/// ever reads the file at a resolution finer than `base_res`**.  The reader
+/// caches the levels that are asked for, not the chain leading to them.  (The base
 /// itself is read as `get_data_at_res` reads any resolution: one the file
 /// does not store, such as an anisotropic clamp of a non-square face, is
 /// reduced from the next finer stored level.)
@@ -878,11 +879,17 @@ impl<R: Read + Seek + Send> SharedReader<R> {
 
     /// Derived level `k` of a face, from the cache or produced now.
     ///
-    /// Level 0 reads the file at [`DerivedLevels::base_res`] and decodes it;
-    /// level `k` derives from level `k - 1` (itself cached on the way), so a
-    /// miss never reads a finer resolution than the base.  Held in the same
-    /// LRU, under the same budget, as decoded file blocks, and evicted like
-    /// them; a block too large for the budget is returned uncached.
+    /// Level 0 reads the file at [`DerivedLevels::base_res`] and decodes it
+    /// (a stored block read for this is not itself cached); level `k`
+    /// derives from level `k - 1`, so a miss never reads a finer resolution
+    /// than the base.  **Only the level asked for is cached**: on
+    /// a miss its ancestors are produced from the deepest one already
+    /// resident (or from the base) and dropped, so a face read only at a
+    /// coarse level holds that level and not the finer chain above it — the
+    /// difference between a few texels and the whole base per face, when a
+    /// distant set reads every face coarse.  Held in the same LRU, under the
+    /// same budget, as decoded file blocks, and evicted like them; a block
+    /// too large for the budget is returned uncached.
     pub fn get_derived(&self, faceid: usize, k: usize) -> Result<PixelData> {
         let derived = self.derived()?;
         let base = self.derived_base_res(faceid)?;
@@ -892,22 +899,65 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                 "derived level below one texel on both axes".into(),
             ));
         }
-        let key = CacheKey::Derived {
+        let key = |level: usize| CacheKey::Derived {
             faceid: faceid as u32,
-            level: k as u8,
+            level: level as u8,
         };
-        if let Some(CacheValue::Pixels(data)) = self.cache_get(&key) {
+        if let Some(CacheValue::Pixels(data)) = self.cache_get(&key(k)) {
             return Ok(data);
         }
-        let data = if k == 0 {
-            let pixels = self.get_data_at_res(faceid, base)?;
-            derived.decode(faceid, base, &pixels)
-        } else {
-            let parent = self.get_derived(faceid, k - 1)?;
-            derived.derive(faceid, k as u8, halve(base, k - 1), &parent)
+        // The deepest resident ancestor, probed under one lock and without
+        // touching the hit/miss counters: these are not lookups the caller
+        // made.
+        let ancestor = {
+            let mut cache = self.lock_pixels();
+            (0..k).rev().find_map(|j| match cache.get(&key(j)) {
+                Some(CacheValue::Pixels(data)) => Some((j, data)),
+                _ => None,
+            })
         };
-        self.inner.counters.derives.fetch_add(1, Ordering::Relaxed);
-        Ok(self.store(key, PixelData::new(data)))
+        let (mut level, mut data) = match ancestor {
+            Some((j, data)) => (j, data.to_vec()),
+            None => {
+                let pixels = self.derived_base_pixels(faceid, base)?;
+                self.inner.counters.derives.fetch_add(1, Ordering::Relaxed);
+                (0, derived.decode(faceid, base, &pixels))
+            }
+        };
+        while level < k {
+            data = derived.derive(faceid, level as u8 + 1, halve(base, level), &data);
+            self.inner.counters.derives.fetch_add(1, Ordering::Relaxed);
+            level += 1;
+        }
+        Ok(self.store(key(k), PixelData::new(data)))
+    }
+
+    /// The file's pixels at a derived chain's base, read to be decoded once
+    /// and dropped: a stored, non-tiled block is used from the cache if it is
+    /// already resident but **not added to it**, because the derived level
+    /// made from it is what will be asked for again — keeping both would
+    /// hold every face's base beside the few texels a coarse read wants.
+    /// Anything else (a tiled block, a reduction, a constant face) is read as
+    /// [`get_data_at_res`](Self::get_data_at_res) reads it.  The bytes are
+    /// the same either way.
+    fn derived_base_pixels(&self, faceid: usize, res: Res) -> Result<PixelData> {
+        if let FaceSource::Stored { levelid, facepos } = self.inner.info.resolve(faceid, res)? {
+            let (fdh, pos) = self.level_entry(levelid, facepos)?;
+            if matches!(fdh.encoding(), Encoding::Zipped | Encoding::DiffZipped)
+                && !fdh.is_large_face()
+            {
+                if let Some(CacheValue::Pixels(data)) =
+                    self.lock_pixels().get(&CacheKey::Block { pos })
+                {
+                    return Ok(data);
+                }
+                let raw = self.read_raw(pos, fdh.blocksize() as usize)?;
+                let data =
+                    decode::decode_packed(&raw, res, fdh.encoding(), &self.inner.info, levelid)?;
+                return Ok(PixelData::new(data));
+            }
+        }
+        self.get_data_at_res(faceid, res)
     }
 
     fn derived(&self) -> Result<&Arc<dyn DerivedLevels>> {
