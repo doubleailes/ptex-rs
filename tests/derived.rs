@@ -229,6 +229,34 @@ fn the_base_block_read_to_derive_is_not_kept() {
 }
 
 #[test]
+fn a_reduced_base_and_its_source_are_not_kept() {
+    // Capping each axis of `quad_u8`'s 8x4 face at 2 asks for 4x4, which the
+    // file does not store: the reader reduces it from 8x4. Neither block may
+    // outlive the derivation, and the chain must equal one read through
+    // `get_data_at_res`, which caches both.
+    let tx = open("quad_u8", 2, 64 << 20);
+    let mut reduced = 0;
+    for f in 0..tx.num_faces() {
+        let base = tx.derived_base_res(f).unwrap();
+        if !tx.is_res_stored(f, base).unwrap() {
+            reduced += 1;
+        }
+    }
+    assert!(reduced > 0, "the fixture has a reduced base at this cap");
+    let expected = {
+        let warm = open("quad_u8", 2, 64 << 20);
+        for f in 0..warm.num_faces() {
+            let base = warm.derived_base_res(f).unwrap();
+            warm.get_data_at_res(f, base).unwrap();
+        }
+        chain(&warm)
+    };
+    assert_eq!(chain(&tx), expected);
+    let s = tx.cache_stats();
+    assert_eq!(s.entries, s.derived_blocks, "a base or its source was kept");
+}
+
+#[test]
 fn derived_bytes_are_inside_the_budget() {
     for name in FIXTURES {
         let tx = open(name, 4, 64 << 20);

@@ -933,29 +933,55 @@ impl<R: Read + Seek + Send> SharedReader<R> {
     }
 
     /// The file's pixels at a derived chain's base, read to be decoded once
-    /// and dropped: a stored, non-tiled block is used from the cache if it is
-    /// already resident but **not added to it**, because the derived level
-    /// made from it is what will be asked for again — keeping both would
-    /// hold every face's base beside the few texels a coarse read wants.
-    /// Anything else (a tiled block, a reduction, a constant face) is read as
+    /// and dropped.  A block already resident is used, but **nothing read
+    /// here is added to the cache**: the derived level made from it is what
+    /// will be asked for again, and keeping both would hold every face's base
+    /// beside the few texels a coarse read wants.  That covers a stored,
+    /// non-tiled block and a reduction — the common base of a non-square face,
+    /// whose capped resolution (64x8 capped at 32 is 32x8) is not a level the
+    /// file stores — together with the source it is reduced from.  Anything
+    /// else (a tiled block, a constant face) is read as
     /// [`get_data_at_res`](Self::get_data_at_res) reads it.  The bytes are
     /// the same either way.
     fn derived_base_pixels(&self, faceid: usize, res: Res) -> Result<PixelData> {
-        if let FaceSource::Stored { levelid, facepos } = self.inner.info.resolve(faceid, res)? {
-            let (fdh, pos) = self.level_entry(levelid, facepos)?;
-            if matches!(fdh.encoding(), Encoding::Zipped | Encoding::DiffZipped)
-                && !fdh.is_large_face()
-            {
-                if let Some(CacheValue::Pixels(data)) =
-                    self.lock_pixels().get(&CacheKey::Block { pos })
+        match self.inner.info.resolve(faceid, res)? {
+            FaceSource::Stored { levelid, facepos } => {
+                let (fdh, pos) = self.level_entry(levelid, facepos)?;
+                if matches!(fdh.encoding(), Encoding::Zipped | Encoding::DiffZipped)
+                    && !fdh.is_large_face()
                 {
+                    if let Some(CacheValue::Pixels(data)) =
+                        self.lock_pixels().get(&CacheKey::Block { pos })
+                    {
+                        return Ok(data);
+                    }
+                    let raw = self.read_raw(pos, fdh.blocksize() as usize)?;
+                    let data = decode::decode_packed(
+                        &raw,
+                        res,
+                        fdh.encoding(),
+                        &self.inner.info,
+                        levelid,
+                    )?;
+                    return Ok(PixelData::new(data));
+                }
+            }
+            FaceSource::Reduced => {
+                let key = CacheKey::Reduced {
+                    faceid: faceid as u32,
+                    res: res.val(),
+                };
+                if let Some(CacheValue::Pixels(data)) = self.lock_pixels().get(&key) {
                     return Ok(data);
                 }
-                let raw = self.read_raw(pos, fdh.blocksize() as usize)?;
-                let data =
-                    decode::decode_packed(&raw, res, fdh.encoding(), &self.inner.info, levelid)?;
+                // `reduced`, without the store, and with its source read the
+                // same way.
+                let (src_res, kind) = self.inner.info.reduction_source(faceid, res)?;
+                let src = self.derived_base_pixels(faceid, src_res)?;
+                let data = decode::reduce_step(&src, src_res, res, kind, &self.inner.info);
                 return Ok(PixelData::new(data));
             }
+            FaceSource::Constant => {}
         }
         self.get_data_at_res(faceid, res)
     }
