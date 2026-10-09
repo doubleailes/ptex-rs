@@ -74,7 +74,9 @@ mod types;
 pub mod utils;
 
 #[cfg(feature = "cache")]
-pub use cache::{CacheOptions, CacheStats, PixelData, SharedReader, DEFAULT_CACHE_BUDGET};
+pub use cache::{
+    CacheOptions, CacheStats, DerivedLevels, PixelData, SharedReader, DEFAULT_CACHE_BUDGET,
+};
 pub use error::{Error, Result};
 pub use metadata::{MetaData, MetaDataEntry};
 pub use reader::PtexReader;
