@@ -257,6 +257,51 @@ fn a_reduced_base_and_its_source_are_not_kept() {
 }
 
 #[test]
+fn a_tiled_base_and_a_tiled_reduction_source_are_not_kept() {
+    // `quad_tiled`'s 1024x512 face stores 512x256 tiled. Capped with its
+    // aspect kept at 9 the base *is* that tiled level; capped per axis at 8
+    // it is 256x256, which the file does not store and the reader reduces
+    // from the tiled 512x256. Neither the tiles nor their directory may
+    // outlive the derivation.
+    for (cap, stored, base) in [(9, true, Res::new(9, 8)), (8, false, Res::new(8, 8))] {
+        let build = || {
+            let tx = SharedReader::open(fixture("quad_tiled")).unwrap();
+            let pixel_size = tx.pixel_size();
+            tx.with_derived(Arc::new(Widen {
+                cap,
+                pixel_size,
+                stored,
+            }))
+            .unwrap()
+        };
+        let tx = build();
+        assert_eq!(tx.derived_base_res(0).unwrap(), base);
+
+        // The values are `get_data_at_res`'s, which caches what it reads.
+        // (Asked of a second reader: `tile_layout` caches the directory.)
+        let warm = build();
+        let tiled = if stored { base } else { Res::new(9, 8) };
+        assert!(warm.tile_layout(0, tiled).unwrap().is_tiled, "cap {cap}");
+        warm.get_data_at_res(0, base).unwrap();
+        assert!(warm.cache_stats().entries > 0);
+        let n = tx.derived_levels(0).unwrap();
+        for k in [n - 1, 0] {
+            assert_eq!(
+                &*tx.get_derived(0, k).unwrap(),
+                &*warm.get_derived(0, k).unwrap(),
+                "cap {cap} level {k}"
+            );
+        }
+        let s = tx.cache_stats();
+        assert_eq!(s.derived_blocks, 2, "cap {cap}");
+        assert_eq!(
+            s.entries, s.derived_blocks,
+            "cap {cap}: a tile or directory was kept"
+        );
+    }
+}
+
+#[test]
 fn derived_bytes_are_inside_the_budget() {
     for name in FIXTURES {
         let tx = open(name, 4, 64 << 20);
