@@ -146,7 +146,14 @@ std::thread::scope(|s| {
 ```
 
 Use `CacheOptions` to set the budget (64 MiB by default) and
-`cache_stats()` to see hits, misses, evictions and resident bytes. Building
+`cache_stats()` to see hits, misses, evictions and resident bytes.
+
+A host that builds its coarse levels its own way — reduced in linear light
+after a colour decode, say, rather than in the file's encoding — installs a
+`DerivedLevels` with `with_derived` and reads them with `get_derived`. Derived
+levels live in the same cache, under the same budget, and level `k` is
+produced from level `k - 1` alone, so a coarse lookup never reads the face's
+full resolution. Building
 with `--no-default-features` drops `lru` and leaves the single-threaded
 `PtexReader`, with `flate2` as the only dependency.
 

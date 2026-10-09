@@ -76,6 +76,53 @@ pub struct CacheStats {
     pub bytes_resident: usize,
     /// The current budget, in bytes.
     pub bytes_budget: usize,
+    /// Host-derived blocks currently resident (see [`DerivedLevels`]),
+    /// counted in `entries` too.
+    pub derived_blocks: usize,
+    /// Accounted bytes of those blocks, counted in `bytes_resident` too.
+    pub derived_bytes: usize,
+    /// Derived blocks produced: one per [`DerivedLevels::decode`] or
+    /// [`DerivedLevels::derive`] call, re-derives after eviction included.
+    pub derives: u64,
+}
+
+/// A mip chain the host defines, cached by the reader.
+///
+/// The file's own reductions are computed in the file's encoding.  A host
+/// that wants its coarse levels built some other way — reduced in linear
+/// light after a colour decode, say — supplies this, and
+/// [`SharedReader::get_derived`] then serves those levels out of the same
+/// cache, under the same byte budget, as the file's decoded blocks: there is
+/// no second cache to size or to forget to report.
+///
+/// The chain of a face starts at [`base_res`](Self::base_res), which is read
+/// from the file (stored or reduced, exactly as
+/// [`SharedReader::get_data_at_res`] returns it) and handed to
+/// [`decode`](Self::decode); that is derived level 0.  Level `k` halves each
+/// axis of level `k - 1` to a floor of one texel
+/// ([`SharedReader::derived_res`]) and is produced by
+/// [`derive`](Self::derive) from its parent alone, so **no derived level
+/// ever reads the file at a resolution finer than `base_res`**.  (The base
+/// itself is read as `get_data_at_res` reads any resolution: one the file
+/// does not store, such as an anisotropic clamp of a non-square face, is
+/// reduced from the next finer stored level.)
+///
+/// Every method must be a pure function of its arguments: an evicted block
+/// is produced again on its next request, and must come back identical.
+pub trait DerivedLevels: Send + Sync {
+    /// The resolution derived level 0 is read at, for face `faceid` whose
+    /// authored resolution is `res`.  At most `res` on each axis.
+    fn base_res(&self, faceid: usize, res: Res) -> Res;
+
+    /// Derived level 0 of `faceid`, from the file's interleaved pixels at
+    /// `res` (the [`base_res`](Self::base_res)).  The returned bytes are the
+    /// host's own layout; the reader only stores them.
+    fn decode(&self, faceid: usize, res: Res, pixels: &[u8]) -> Vec<u8>;
+
+    /// Derived level `k` (`k >= 1`) of `faceid`, from level `k - 1`, whose
+    /// resolution is `parent_res` and whose bytes are what this host
+    /// returned for it.
+    fn derive(&self, faceid: usize, k: u8, parent_res: Res, parent: &[u8]) -> Vec<u8>;
 }
 
 /// Decoded pixel data, reference-counted so that a cache hit copies nothing.
@@ -125,6 +172,8 @@ enum CacheKey {
     Reduced { faceid: u32, res: u16 },
     /// The tile directory of the tiled block at this file offset.
     TileDir { pos: u64 },
+    /// Level `level` of a face's host-derived chain ([`DerivedLevels`]).
+    Derived { faceid: u32, level: u8 },
 }
 
 #[derive(Clone)]
@@ -150,6 +199,10 @@ struct PixelCache {
     budget: usize,
     evictions: u64,
     oversized: u64,
+    /// Resident [`CacheKey::Derived`] entries and their accounted bytes,
+    /// a subset of `lru` and `bytes`.
+    derived_entries: usize,
+    derived_bytes: usize,
 }
 
 impl PixelCache {
@@ -160,6 +213,39 @@ impl PixelCache {
             budget,
             evictions: 0,
             oversized: 0,
+            derived_entries: 0,
+            derived_bytes: 0,
+        }
+    }
+
+    /// Book an entry entering or leaving the cache.
+    fn account(&mut self, key: &CacheKey, size: usize, entering: bool) {
+        if entering {
+            self.bytes += size;
+        } else {
+            self.bytes -= size;
+        }
+        if let CacheKey::Derived { .. } = key {
+            if entering {
+                self.derived_entries += 1;
+                self.derived_bytes += size;
+            } else {
+                self.derived_entries -= 1;
+                self.derived_bytes -= size;
+            }
+        }
+    }
+
+    /// Evict least-recently-used entries until `bytes + room` fits.
+    fn evict_for(&mut self, room: usize) {
+        while self.bytes + room > self.budget {
+            match self.lru.pop_lru() {
+                Some((key, evicted)) => {
+                    self.account(&key, evicted.size(), false);
+                    self.evictions += 1;
+                }
+                None => break,
+            }
         }
     }
 
@@ -178,16 +264,8 @@ impl PixelCache {
             self.oversized += 1;
             return value;
         }
-        while self.bytes + size > self.budget {
-            match self.lru.pop_lru() {
-                Some((_, evicted)) => {
-                    self.bytes -= evicted.size();
-                    self.evictions += 1;
-                }
-                None => break,
-            }
-        }
-        self.bytes += size;
+        self.evict_for(size);
+        self.account(&key, size, true);
         self.lru.put(key, value.clone());
         value
     }
@@ -195,19 +273,13 @@ impl PixelCache {
     fn clear(&mut self) {
         self.lru.clear();
         self.bytes = 0;
+        self.derived_entries = 0;
+        self.derived_bytes = 0;
     }
 
     fn set_budget(&mut self, budget: usize) {
         self.budget = budget;
-        while self.bytes > self.budget {
-            match self.lru.pop_lru() {
-                Some((_, evicted)) => {
-                    self.bytes -= evicted.size();
-                    self.evictions += 1;
-                }
-                None => break,
-            }
-        }
+        self.evict_for(0);
     }
 }
 
@@ -215,6 +287,7 @@ impl PixelCache {
 struct Counters {
     hits: AtomicU64,
     misses: AtomicU64,
+    derives: AtomicU64,
 }
 
 struct Shared<R> {
@@ -224,6 +297,7 @@ struct Shared<R> {
     metadata: OnceLock<MetaData>,
     pixels: Mutex<PixelCache>,
     counters: Counters,
+    derived: OnceLock<Arc<dyn DerivedLevels>>,
 }
 
 /// A thread-safe, cheaply clonable reader for Ptex texture files.
@@ -303,6 +377,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                 metadata: OnceLock::new(),
                 pixels: Mutex::new(PixelCache::new(options.budget_bytes)),
                 counters: Counters::default(),
+                derived: OnceLock::new(),
             }),
         })
     }
@@ -457,6 +532,9 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             entries: cache.lru.len(),
             bytes_resident: cache.bytes,
             bytes_budget: cache.budget,
+            derived_blocks: cache.derived_entries,
+            derived_bytes: cache.derived_bytes,
+            derives: self.inner.counters.derives.load(Ordering::Relaxed),
         }
     }
 
@@ -754,6 +832,91 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         self.tile_into(pos, res, tile, levelid, buffer, stride)
     }
 
+    // ---- host-derived levels ----
+
+    /// Install the host's derived mip chain (see [`DerivedLevels`]).
+    ///
+    /// Once per reader: every clone shares the one chain, so installing a
+    /// second is refused rather than letting two hosts answer for the same
+    /// cache keys.
+    pub fn with_derived(self, derived: Arc<dyn DerivedLevels>) -> Result<Self> {
+        self.inner
+            .derived
+            .set(derived)
+            .map_err(|_| Error::Unsupported("derived levels are already installed".into()))?;
+        Ok(self)
+    }
+
+    /// True once [`with_derived`](Self::with_derived) has installed a chain.
+    pub fn has_derived(&self) -> bool {
+        self.inner.derived.get().is_some()
+    }
+
+    /// The resolution derived level 0 of a face is read at: the host's
+    /// [`DerivedLevels::base_res`].
+    pub fn derived_base_res(&self, faceid: usize) -> Result<Res> {
+        let derived = self.derived()?;
+        Ok(derived.base_res(faceid, self.face_info(faceid)?.res))
+    }
+
+    /// Levels a face's derived chain holds: its base halved on each axis,
+    /// to a floor of one texel, until both axes reach one.
+    pub fn derived_levels(&self, faceid: usize) -> Result<usize> {
+        let base = self.derived_base_res(faceid)?;
+        Ok(base.ulog2.max(base.vlog2).max(0) as usize + 1)
+    }
+
+    /// Resolution of derived level `k` of a face.
+    pub fn derived_res(&self, faceid: usize, k: usize) -> Result<Res> {
+        if k >= self.derived_levels(faceid)? {
+            return Err(Error::Unsupported(
+                "derived level below one texel on both axes".into(),
+            ));
+        }
+        Ok(halve(self.derived_base_res(faceid)?, k))
+    }
+
+    /// Derived level `k` of a face, from the cache or produced now.
+    ///
+    /// Level 0 reads the file at [`DerivedLevels::base_res`] and decodes it;
+    /// level `k` derives from level `k - 1` (itself cached on the way), so a
+    /// miss never reads a finer resolution than the base.  Held in the same
+    /// LRU, under the same budget, as decoded file blocks, and evicted like
+    /// them; a block too large for the budget is returned uncached.
+    pub fn get_derived(&self, faceid: usize, k: usize) -> Result<PixelData> {
+        let derived = self.derived()?;
+        let base = self.derived_base_res(faceid)?;
+        let nlevels = base.ulog2.max(base.vlog2).max(0) as usize + 1;
+        if k >= nlevels {
+            return Err(Error::Unsupported(
+                "derived level below one texel on both axes".into(),
+            ));
+        }
+        let key = CacheKey::Derived {
+            faceid: faceid as u32,
+            level: k as u8,
+        };
+        if let Some(CacheValue::Pixels(data)) = self.cache_get(&key) {
+            return Ok(data);
+        }
+        let data = if k == 0 {
+            let pixels = self.get_data_at_res(faceid, base)?;
+            derived.decode(faceid, base, &pixels)
+        } else {
+            let parent = self.get_derived(faceid, k - 1)?;
+            derived.derive(faceid, k as u8, halve(base, k - 1), &parent)
+        };
+        self.inner.counters.derives.fetch_add(1, Ordering::Relaxed);
+        Ok(self.store(key, PixelData::new(data)))
+    }
+
+    fn derived(&self) -> Result<&Arc<dyn DerivedLevels>> {
+        self.inner
+            .derived
+            .get()
+            .ok_or_else(|| Error::Unsupported("no derived levels installed".into()))
+    }
+
     // ---- internals ----
 
     fn lock_io(&self) -> MutexGuard<'_, R> {
@@ -1026,4 +1189,10 @@ impl<R: Read + Seek + Send> SharedReader<R> {
 enum Block {
     Constant(Vec<u8>),
     Image(PixelData),
+}
+
+/// `res` with `k` halvings of each axis, each to a floor of one texel.
+fn halve(res: Res, k: usize) -> Res {
+    let k = k.min(i8::MAX as usize) as i8;
+    Res::new((res.ulog2 - k).max(0), (res.vlog2 - k).max(0))
 }
