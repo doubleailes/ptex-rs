@@ -570,6 +570,12 @@ impl<R: Read + Seek + Send> SharedReader<R> {
     /// Stored resolutions are read directly; others are computed by
     /// reduction, exactly as [`crate::PtexReader::get_data_at_res`].
     pub fn get_data_at_res(&self, faceid: usize, res: Res) -> Result<PixelData> {
+        self.data_at_res(faceid, res, Keep::Cached)
+    }
+
+    /// [`get_data_at_res`](Self::get_data_at_res), keeping what it reads in
+    /// the cache or not as `keep` says.
+    fn data_at_res(&self, faceid: usize, res: Res, keep: Keep) -> Result<PixelData> {
         let pixel_size = self.inner.info.pixel_size;
         match self.inner.info.resolve(faceid, res)? {
             FaceSource::Constant => {
@@ -592,10 +598,10 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                     // itself, so the same pixels are not held twice.
                     let mut buf = vec![0u8; res.size() * pixel_size];
                     let stride = res.u() * pixel_size;
-                    self.assemble_tiles(pos, res, levelid, &mut buf, stride)?;
+                    self.assemble_tiles(pos, res, levelid, &mut buf, stride, keep)?;
                     Ok(PixelData::new(buf))
                 } else {
-                    match self.block(pos, fdh, res, levelid)? {
+                    match self.block(pos, fdh, res, levelid, keep)? {
                         Block::Constant(pixel) => {
                             let mut buf = vec![0u8; res.size() * pixel_size];
                             utils::fill(
@@ -612,7 +618,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                     }
                 }
             }
-            FaceSource::Reduced => self.reduced(faceid, res),
+            FaceSource::Reduced => self.reduced(faceid, res, keep),
         }
     }
 
@@ -639,13 +645,13 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             FaceSource::Stored { levelid, facepos } => {
                 let (fdh, pos) = self.level_entry(levelid, facepos)?;
                 if fdh.encoding() == Encoding::Tiled {
-                    self.assemble_tiles(pos, res, levelid, buffer, stride)
+                    self.assemble_tiles(pos, res, levelid, buffer, stride, Keep::Cached)
                 } else {
-                    self.block_into(pos, fdh, res, levelid, buffer, stride)
+                    self.block_into(pos, fdh, res, levelid, buffer, stride, Keep::Cached)
                 }
             }
             FaceSource::Reduced => {
-                let data = self.reduced(faceid, res)?;
+                let data = self.reduced(faceid, res, Keep::Cached)?;
                 let rowlen = res.u() * pixel_size;
                 utils::copy_rows(&data, rowlen, buffer, stride, res.v(), rowlen);
                 Ok(())
@@ -710,7 +716,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                         Ok(TileLayout::untiled(res, false, true))
                     }
                     Encoding::Tiled => {
-                        let dir = self.tile_dir(pos, res)?;
+                        let dir = self.tile_dir(pos, res, Keep::Cached)?;
                         Ok(TileLayout {
                             res,
                             tile_res: dir.tile_res,
@@ -753,7 +759,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         };
         let (fdh, pos) = self.level_entry(levelid, facepos)?;
         let (fdh, pos) = if layout.is_tiled {
-            let dir = self.tile_dir(pos, res)?;
+            let dir = self.tile_dir(pos, res, Keep::Cached)?;
             (dir.fdh[tile], dir.offsets[tile])
         } else {
             (fdh, pos)
@@ -785,8 +791,14 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             return Err(Error::Corrupt("inconsistent tile layout".into()));
         };
         let (_, pos) = self.level_entry(levelid, facepos)?;
-        let dir = self.tile_dir(pos, res)?;
-        match self.block(dir.offsets[tile], dir.fdh[tile], dir.tile_res, levelid)? {
+        let dir = self.tile_dir(pos, res, Keep::Cached)?;
+        match self.block(
+            dir.offsets[tile],
+            dir.fdh[tile],
+            dir.tile_res,
+            levelid,
+            Keep::Cached,
+        )? {
             Block::Image(data) => Ok(data),
             Block::Constant(pixel) => {
                 let tres = dir.tile_res;
@@ -933,57 +945,16 @@ impl<R: Read + Seek + Send> SharedReader<R> {
     }
 
     /// The file's pixels at a derived chain's base, read to be decoded once
-    /// and dropped.  A block already resident is used, but **nothing read
-    /// here is added to the cache**: the derived level made from it is what
-    /// will be asked for again, and keeping both would hold every face's base
-    /// beside the few texels a coarse read wants.  That covers a stored,
-    /// non-tiled block and a reduction — the common base of a non-square face,
-    /// whose capped resolution (64x8 capped at 32 is 32x8) is not a level the
-    /// file stores — together with the source it is reduced from.  Anything
-    /// else (a tiled block, a constant face) is read as
-    /// [`get_data_at_res`](Self::get_data_at_res) reads it.  The bytes are
-    /// the same either way.
+    /// and dropped.  Blocks already resident are used, but **nothing read
+    /// here is added to the cache** — not a stored block, not a tiled one's
+    /// tiles or directory, not a reduction or the source it is reduced from
+    /// (the common base of a non-square face: 64x8 capped at 32 is 32x8, a
+    /// level the file does not store).  The derived level made from it is
+    /// what will be asked for again, and keeping both would hold every face's
+    /// base beside the few texels a coarse read wants.  The bytes are
+    /// [`get_data_at_res`](Self::get_data_at_res)'s.
     fn derived_base_pixels(&self, faceid: usize, res: Res) -> Result<PixelData> {
-        match self.inner.info.resolve(faceid, res)? {
-            FaceSource::Stored { levelid, facepos } => {
-                let (fdh, pos) = self.level_entry(levelid, facepos)?;
-                if matches!(fdh.encoding(), Encoding::Zipped | Encoding::DiffZipped)
-                    && !fdh.is_large_face()
-                {
-                    if let Some(CacheValue::Pixels(data)) =
-                        self.lock_pixels().get(&CacheKey::Block { pos })
-                    {
-                        return Ok(data);
-                    }
-                    let raw = self.read_raw(pos, fdh.blocksize() as usize)?;
-                    let data = decode::decode_packed(
-                        &raw,
-                        res,
-                        fdh.encoding(),
-                        &self.inner.info,
-                        levelid,
-                    )?;
-                    return Ok(PixelData::new(data));
-                }
-            }
-            FaceSource::Reduced => {
-                let key = CacheKey::Reduced {
-                    faceid: faceid as u32,
-                    res: res.val(),
-                };
-                if let Some(CacheValue::Pixels(data)) = self.lock_pixels().get(&key) {
-                    return Ok(data);
-                }
-                // `reduced`, without the store, and with its source read the
-                // same way.
-                let (src_res, kind) = self.inner.info.reduction_source(faceid, res)?;
-                let src = self.derived_base_pixels(faceid, src_res)?;
-                let data = decode::reduce_step(&src, src_res, res, kind, &self.inner.info);
-                return Ok(PixelData::new(data));
-            }
-            FaceSource::Constant => {}
-        }
-        self.get_data_at_res(faceid, res)
+        self.data_at_res(faceid, res, Keep::Transient)
     }
 
     fn derived(&self) -> Result<&Arc<dyn DerivedLevels>> {
@@ -1067,10 +1038,20 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         }
     }
 
+    /// A cache entry for a read that will keep what it reads (`Cached`,
+    /// counted as a hit or a miss), or a probe for one that will not
+    /// (`Transient`, uncounted: it is not a lookup the caller made).
+    fn lookup(&self, key: &CacheKey, keep: Keep) -> Option<CacheValue> {
+        match keep {
+            Keep::Cached => self.cache_get(key),
+            Keep::Transient => self.lock_pixels().get(key),
+        }
+    }
+
     /// Read, or take from the cache, the tile directory of a tiled block.
-    fn tile_dir(&self, pos: u64, res: Res) -> Result<Arc<TileDir>> {
+    fn tile_dir(&self, pos: u64, res: Res, keep: Keep) -> Result<Arc<TileDir>> {
         let key = CacheKey::TileDir { pos };
-        if let Some(CacheValue::Dir(dir)) = self.cache_get(&key) {
+        if let Some(CacheValue::Dir(dir)) = self.lookup(&key, keep) {
             return Ok(dir);
         }
         let head = self.read_raw(pos, 6)?;
@@ -1084,6 +1065,9 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             res,
             pos + 6 + tileheadersize as u64,
         )?);
+        if keep == Keep::Transient {
+            return Ok(dir);
+        }
         match self
             .lock_pixels()
             .insert_or_get(key, CacheValue::Dir(dir.clone()))
@@ -1094,7 +1078,14 @@ impl<R: Read + Seek + Send> SharedReader<R> {
     }
 
     /// Read, or take from the cache, one non-tiled data block.
-    fn block(&self, pos: u64, fdh: FaceDataHeader, res: Res, levelid: usize) -> Result<Block> {
+    fn block(
+        &self,
+        pos: u64,
+        fdh: FaceDataHeader,
+        res: Res,
+        levelid: usize,
+        keep: Keep,
+    ) -> Result<Block> {
         let key = CacheKey::Block { pos };
         match fdh.encoding() {
             Encoding::Constant => {
@@ -1116,7 +1107,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                 )))
             }
             Encoding::Zipped | Encoding::DiffZipped => {
-                if let Some(CacheValue::Pixels(data)) = self.cache_get(&key) {
+                if let Some(CacheValue::Pixels(data)) = self.lookup(&key, keep) {
                     return Ok(Block::Image(data));
                 }
                 if fdh.is_large_face() {
@@ -1125,9 +1116,17 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                 let raw = self.read_raw(pos, fdh.blocksize() as usize)?;
                 let data =
                     decode::decode_packed(&raw, res, fdh.encoding(), &self.inner.info, levelid)?;
-                Ok(Block::Image(self.store(key, PixelData::new(data))))
+                Ok(Block::Image(self.keep(key, PixelData::new(data), keep)))
             }
             Encoding::Tiled => Err(Error::Corrupt("nested tiled face data".into())),
+        }
+    }
+
+    /// `data`, stored under `key` when the read keeps what it reads.
+    fn keep(&self, key: CacheKey, data: PixelData, keep: Keep) -> PixelData {
+        match keep {
+            Keep::Cached => self.store(key, data),
+            Keep::Transient => data,
         }
     }
 
@@ -1142,6 +1141,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
     }
 
     /// Write one non-tiled block into a strided destination buffer.
+    #[allow(clippy::too_many_arguments)]
     fn block_into(
         &self,
         pos: u64,
@@ -1150,9 +1150,10 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         levelid: usize,
         dst: &mut [u8],
         stride: usize,
+        keep: Keep,
     ) -> Result<()> {
         let pixel_size = self.inner.info.pixel_size;
-        match self.block(pos, fdh, res, levelid)? {
+        match self.block(pos, fdh, res, levelid, keep)? {
             Block::Constant(pixel) => {
                 utils::fill(&pixel, dst, stride, res.u(), res.v(), pixel_size);
             }
@@ -1174,7 +1175,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         dst: &mut [u8],
         stride: usize,
     ) -> Result<()> {
-        let dir = self.tile_dir(pos, res)?;
+        let dir = self.tile_dir(pos, res, Keep::Cached)?;
         self.block_into(
             dir.offsets[tile],
             dir.fdh[tile],
@@ -1182,6 +1183,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             levelid,
             dst,
             stride,
+            Keep::Cached,
         )
     }
 
@@ -1193,9 +1195,10 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         levelid: usize,
         buffer: &mut [u8],
         stride: usize,
+        keep: Keep,
     ) -> Result<()> {
         let pixel_size = self.inner.info.pixel_size;
-        let dir = self.tile_dir(pos, res)?;
+        let dir = self.tile_dir(pos, res, keep)?;
         let tile_res = dir.tile_res;
         let ntilesu = res.ntilesu(tile_res);
         let tilerowlen = pixel_size * tile_res.u();
@@ -1211,24 +1214,25 @@ impl<R: Read + Seek + Send> SharedReader<R> {
                 levelid,
                 &mut buffer[dst_off..],
                 stride,
+                keep,
             )?;
         }
         Ok(())
     }
 
     /// Compute, or take from the cache, a dynamically reduced resolution.
-    fn reduced(&self, faceid: usize, res: Res) -> Result<PixelData> {
+    fn reduced(&self, faceid: usize, res: Res, keep: Keep) -> Result<PixelData> {
         let key = CacheKey::Reduced {
             faceid: faceid as u32,
             res: res.val(),
         };
-        if let Some(CacheValue::Pixels(data)) = self.cache_get(&key) {
+        if let Some(CacheValue::Pixels(data)) = self.lookup(&key, keep) {
             return Ok(data);
         }
         let (src_res, kind) = self.inner.info.reduction_source(faceid, res)?;
-        let src = self.get_data_at_res(faceid, src_res)?;
+        let src = self.data_at_res(faceid, src_res, keep)?;
         let data = decode::reduce_step(&src, src_res, res, kind, &self.inner.info);
-        Ok(self.store(key, PixelData::new(data)))
+        Ok(self.keep(key, PixelData::new(data), keep))
     }
 
     fn read_metadata(&self) -> Result<MetaData> {
@@ -1265,6 +1269,16 @@ impl<R: Read + Seek + Send> SharedReader<R> {
 enum Block {
     Constant(Vec<u8>),
     Image(PixelData),
+}
+
+/// Whether a read adds what it decodes to the cache.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// Every public read: entries are stored, and lookups are counted.
+    Cached,
+    /// A derived chain's base: resident entries are used, nothing is stored,
+    /// and probes are not counted as hits or misses.
+    Transient,
 }
 
 /// `res` with `k` halvings of each axis, each to a floor of one texel.

@@ -154,10 +154,11 @@ after a colour decode, say, rather than in the file's encoding — installs a
 levels live in the same cache, under the same budget, and level `k` is
 produced from level `k - 1` alone, so a coarse lookup never reads the face's
 full resolution. Only the levels asked for are cached, not the chain or the
-file block that led to them, so a face read only at a coarse level holds only
-that level. Building
-with `--no-default-features` drops `lru` and leaves the single-threaded
-`PtexReader`, with `flate2` as the only dependency.
+file blocks (tiles, reductions) that led to them, so a face read only at a
+coarse level holds only that level.
+
+Building with `--no-default-features` drops `lru` and leaves the
+single-threaded `PtexReader`, with `flate2` as the only dependency.
 
 Two small CLIs are included as examples:
 
