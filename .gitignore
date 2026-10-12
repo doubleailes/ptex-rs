@@ -24,4 +24,6 @@ target
 # Added by cargo
 
 /target
-Cargo.lock
+Cargo.lock# pixi environments
+.pixi/*
+!.pixi/config.toml
