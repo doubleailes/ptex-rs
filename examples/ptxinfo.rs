@@ -23,11 +23,14 @@ fn main() -> ExitCode {
     }
 }
 
+/// True if `e` is an I/O error from writing to a closed pipe (e.g. `| head`).
 fn is_broken_pipe(e: &(dyn std::error::Error + 'static)) -> bool {
     e.downcast_ref::<std::io::Error>()
         .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
+/// Print the header, meta data and per-face info of the file named on the
+/// command line.
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("usage: ptxinfo <file.ptx>")?;
     let mut tx = PtexReader::open(&path)?;

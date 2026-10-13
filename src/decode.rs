@@ -17,15 +17,20 @@ use crate::utils;
 /// offset per face stored in the level.
 #[derive(Debug, Clone)]
 pub(crate) struct Level {
+    /// Face data header of each face in the level.
     pub fdh: Vec<FaceDataHeader>,
+    /// Absolute file offset of each face's data block.
     pub offsets: Vec<u64>,
 }
 
 /// Inflated tile directory of one tiled face data block.
 #[derive(Debug, Clone)]
 pub(crate) struct TileDir {
+    /// Resolution of every tile.
     pub tile_res: Res,
+    /// Face data header of each tile, in row-major tile order.
     pub fdh: Vec<FaceDataHeader>,
+    /// Absolute file offset of each tile's data block.
     pub offsets: Vec<u64>,
 }
 

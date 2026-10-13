@@ -17,6 +17,7 @@ pub enum MeshType {
 }
 
 impl MeshType {
+    /// Decode the header's mesh type field.
     pub(crate) fn from_u32(v: u32) -> Result<Self> {
         match v {
             0 => Ok(MeshType::Triangle),
@@ -48,6 +49,7 @@ pub enum DataType {
 }
 
 impl DataType {
+    /// Decode the header's data type field.
     pub(crate) fn from_u32(v: u32) -> Result<Self> {
         match v {
             0 => Ok(DataType::UInt8),
@@ -108,6 +110,8 @@ pub enum EdgeFilterMode {
 }
 
 impl EdgeFilterMode {
+    /// Decode the extended header's edge filter mode; unknown values
+    /// read as [`EdgeFilterMode::None`].
     pub(crate) fn from_u16(v: u16) -> Self {
         match v {
             1 => EdgeFilterMode::TangentVector,
@@ -136,6 +140,7 @@ pub enum BorderMode {
 }
 
 impl BorderMode {
+    /// Decode an extended header border mode field.
     pub(crate) fn from_u16(v: u16) -> Self {
         match v {
             1 => BorderMode::Black,
@@ -169,6 +174,7 @@ pub enum EdgeId {
 }
 
 impl EdgeId {
+    /// Decode an edge id from its low two bits.
     pub(crate) fn from_u8(v: u8) -> Self {
         match v & 3 {
             0 => EdgeId::Bottom,
@@ -207,6 +213,7 @@ pub enum MetaDataType {
 }
 
 impl MetaDataType {
+    /// Decode a meta data entry's type byte.
     pub(crate) fn from_u8(v: u8) -> Result<Self> {
         match v {
             0 => Ok(MetaDataType::String),

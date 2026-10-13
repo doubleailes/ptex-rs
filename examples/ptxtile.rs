@@ -37,6 +37,8 @@ fn main() -> ExitCode {
     }
 }
 
+/// Print the tile layout of `faceid` at mip `level`, then either the first
+/// texels of `tile` or, when no tile is given, where every tile is stored.
 fn run(path: &str, faceid: usize, level: usize, tile: Option<usize>) -> ptex::Result<()> {
     let mut out = std::io::stdout().lock();
     let mut tx = PtexReader::open(path)?;

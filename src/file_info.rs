@@ -48,23 +48,37 @@ pub(crate) enum ReduceKind {
 
 /// Parsed header, face table and level table of a Ptex file.
 pub(crate) struct FileInfo {
+    /// Whether color channels are premultiplied by alpha on read.
     pub premultiply: bool,
+    /// Fixed file header.
     pub header: Header,
+    /// Extended header (zero-filled where the file's is shorter).
     pub ext_header: ExtHeader,
+    /// Decoded mesh type.
     pub mesh_type: MeshType,
+    /// Decoded per-channel data type.
     pub data_type: DataType,
+    /// Bytes per texel (channel size times channel count).
     pub pixel_size: usize,
 
+    /// File offset of the zipped small meta data block.
     pub metadata_pos: u64,
+    /// File offset of the zipped large meta data header.
     pub lmdheader_pos: u64,
 
     /// True if the file carries edit blocks appended after the main data.
     pub has_edits: bool,
 
+    /// Per-face resolution and adjacency, indexed by face id.
     pub face_info: Vec<FaceInfo>,
+    /// Position of each face within the reduction levels, indexed by
+    /// face id (see [`utils::gen_rfaceids`]).
     pub rfaceids: Vec<u32>,
+    /// One texel per face holding its average (or constant) value.
     pub const_data: Vec<u8>,
+    /// Level info records, level 0 first.
     pub level_info: Vec<LevelInfo>,
+    /// File offset of each level's data block.
     pub level_pos: Vec<u64>,
 }
 
@@ -196,14 +210,17 @@ impl FileInfo {
         })
     }
 
+    /// Number of faces in the mesh.
     pub fn num_faces(&self) -> usize {
         self.header.nfaces as usize
     }
 
+    /// Number of channels per texel.
     pub fn num_channels(&self) -> usize {
         self.header.nchannels as usize
     }
 
+    /// Number of stored resolution levels, including level 0.
     pub fn num_levels(&self) -> usize {
         self.header.nlevels as usize
     }
@@ -213,18 +230,22 @@ impl FileInfo {
         self.has_edits
     }
 
+    /// Border mode in u.
     pub fn u_border_mode(&self) -> BorderMode {
         BorderMode::from_u16(self.ext_header.ubordermode)
     }
 
+    /// Border mode in v.
     pub fn v_border_mode(&self) -> BorderMode {
         BorderMode::from_u16(self.ext_header.vbordermode)
     }
 
+    /// Edge filter mode.
     pub fn edge_filter_mode(&self) -> EdgeFilterMode {
         EdgeFilterMode::from_u16(self.ext_header.edgefiltermode)
     }
 
+    /// Face info for `faceid`, or [`Error::FaceOutOfRange`].
     pub fn face_info(&self, faceid: usize) -> Result<&FaceInfo> {
         self.face_info.get(faceid).ok_or(Error::FaceOutOfRange {
             faceid: faceid as i32,
@@ -232,6 +253,8 @@ impl FileInfo {
         })
     }
 
+    /// The single constant-data texel for `faceid`, or
+    /// [`Error::FaceOutOfRange`].
     pub fn constant_data(&self, faceid: usize) -> Result<&[u8]> {
         if faceid >= self.num_faces() {
             return Err(Error::FaceOutOfRange {
@@ -297,6 +320,7 @@ impl FileInfo {
         Ok(n)
     }
 
+    /// Number of faces stored in level `levelid`, or 0 past the last level.
     fn level_nfaces(&self, levelid: usize) -> usize {
         self.level_info
             .get(levelid)

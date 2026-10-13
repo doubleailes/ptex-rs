@@ -133,6 +133,7 @@ pub trait DerivedLevels: Send + Sync {
 pub struct PixelData(Arc<Vec<u8>>);
 
 impl PixelData {
+    /// Wrap freshly decoded bytes.
     fn new(data: Vec<u8>) -> Self {
         PixelData(Arc::new(data))
     }
@@ -163,27 +164,48 @@ impl AsRef<[u8]> for PixelData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Identifies one entry in the [`PixelCache`].
 enum CacheKey {
     /// Decoded pixels of a block stored in the file — a whole face or a
     /// single tile — identified by its absolute file offset.  An offset
     /// determines the block, and so also the level it belongs to, which is
     /// what decides whether alpha premultiplication was applied.
-    Block { pos: u64 },
+    Block {
+        /// Absolute file offset of the block.
+        pos: u64,
+    },
     /// A dynamically reduced image, which has no file offset of its own.
-    Reduced { faceid: u32, res: u16 },
+    Reduced {
+        /// Face the image belongs to.
+        faceid: u32,
+        /// Its resolution, packed by [`Res::val`].
+        res: u16,
+    },
     /// The tile directory of the tiled block at this file offset.
-    TileDir { pos: u64 },
+    TileDir {
+        /// Absolute file offset of the tiled block.
+        pos: u64,
+    },
     /// Level `level` of a face's host-derived chain ([`DerivedLevels`]).
-    Derived { faceid: u32, level: u8 },
+    Derived {
+        /// Face the level belongs to.
+        faceid: u32,
+        /// Level index within the derived chain.
+        level: u8,
+    },
 }
 
 #[derive(Clone)]
+/// A cached item: decoded pixels or a parsed tile directory.
 enum CacheValue {
+    /// Decoded pixels of a block, a reduction or a derived level.
     Pixels(PixelData),
+    /// A tiled face's tile directory.
     Dir(Arc<TileDir>),
 }
 
 impl CacheValue {
+    /// Bytes this entry counts against the cache budget.
     fn size(&self) -> usize {
         ENTRY_OVERHEAD
             + match self {
@@ -195,18 +217,25 @@ impl CacheValue {
 
 /// A byte-budgeted LRU over `lru::LruCache`, which is count-bounded only.
 struct PixelCache {
+    /// Entries in recency order; unbounded, since `budget` bounds it.
     lru: lru::LruCache<CacheKey, CacheValue>,
+    /// Accounted size of all resident entries.
     bytes: usize,
+    /// Upper bound on `bytes`.
     budget: usize,
+    /// Entries evicted to make room, since the reader was opened.
     evictions: u64,
+    /// Entries never cached because they alone exceed `budget`.
     oversized: u64,
     /// Resident [`CacheKey::Derived`] entries and their accounted bytes,
     /// a subset of `lru` and `bytes`.
     derived_entries: usize,
+    /// Accounted bytes of the resident derived entries.
     derived_bytes: usize,
 }
 
 impl PixelCache {
+    /// An empty cache holding at most `budget` bytes.
     fn new(budget: usize) -> Self {
         PixelCache {
             lru: lru::LruCache::unbounded(),
@@ -250,6 +279,7 @@ impl PixelCache {
         }
     }
 
+    /// Look up `key`, marking it most recently used.
     fn get(&mut self, key: &CacheKey) -> Option<CacheValue> {
         self.lru.get(key).cloned()
     }
@@ -271,6 +301,7 @@ impl PixelCache {
         value
     }
 
+    /// Drop every entry; statistics counters are kept.
     fn clear(&mut self) {
         self.lru.clear();
         self.bytes = 0;
@@ -278,6 +309,7 @@ impl PixelCache {
         self.derived_bytes = 0;
     }
 
+    /// Change the budget, evicting at once if it shrank.
     fn set_budget(&mut self, budget: usize) {
         self.budget = budget;
         self.evict_for(0);
@@ -285,19 +317,31 @@ impl PixelCache {
 }
 
 #[derive(Default)]
+/// Lock-free cache statistics.
 struct Counters {
+    /// Lookups served from the cache.
     hits: AtomicU64,
+    /// Lookups that had to read or compute.
     misses: AtomicU64,
+    /// Calls into the installed [`DerivedLevels`].
     derives: AtomicU64,
 }
 
+/// State shared by every clone of a [`SharedReader`].
 struct Shared<R> {
+    /// Header, face table and level table, parsed at open.
     info: FileInfo,
+    /// The open stream; locked only for the duration of a raw read.
     io: Mutex<R>,
+    /// Per-level face data headers, loaded on first use.
     levels: Vec<OnceLock<Level>>,
+    /// Meta data, loaded on first use.
     metadata: OnceLock<MetaData>,
+    /// Decoded pixels and tile directories.
     pixels: Mutex<PixelCache>,
+    /// Cache statistics.
     counters: Counters,
+    /// Host-supplied mip chain, if one was installed.
     derived: OnceLock<Arc<dyn DerivedLevels>>,
 }
 
@@ -336,6 +380,7 @@ struct Shared<R> {
 /// an absolute seek of an exactly known length, and `BufReader` discards its
 /// buffer on each seek, so buffering would only add a copy.
 pub struct SharedReader<R = File> {
+    /// State shared with every clone.
     inner: Arc<Shared<R>>,
 }
 
@@ -957,6 +1002,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         self.data_at_res(faceid, res, Keep::Transient)
     }
 
+    /// The installed [`DerivedLevels`], or [`Error::Unsupported`].
     fn derived(&self) -> Result<&Arc<dyn DerivedLevels>> {
         self.inner
             .derived
@@ -966,10 +1012,13 @@ impl<R: Read + Seek + Send> SharedReader<R> {
 
     // ---- internals ----
 
+    /// Lock the stream, recovering from poisoning: a panic mid-read leaves
+    /// no state that a later absolute seek would not reset.
     fn lock_io(&self) -> MutexGuard<'_, R> {
         self.inner.io.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Lock the pixel cache, recovering from poisoning.
     fn lock_pixels(&self) -> MutexGuard<'_, PixelCache> {
         self.inner
             .pixels
@@ -991,6 +1040,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         Ok(buf)
     }
 
+    /// Look up `key`, counting a hit or a miss.
     fn cache_get(&self, key: &CacheKey) -> Option<CacheValue> {
         let hit = self.lock_pixels().get(key);
         let counter = if hit.is_some() {
@@ -1030,6 +1080,8 @@ impl<R: Read + Seek + Send> SharedReader<R> {
             .expect("level index was just set"))
     }
 
+    /// Face data header and file offset of the face at `facepos` in
+    /// level `levelid`, loading the level's index if needed.
     fn level_entry(&self, levelid: usize, facepos: usize) -> Result<(FaceDataHeader, u64)> {
         let level = self.level(levelid)?;
         match level.fdh.get(facepos) {
@@ -1130,6 +1182,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         }
     }
 
+    /// Cache `data` under `key`, returning whichever copy ends up resident.
     fn store(&self, key: CacheKey, data: PixelData) -> PixelData {
         match self
             .lock_pixels()
@@ -1235,6 +1288,7 @@ impl<R: Read + Seek + Send> SharedReader<R> {
         Ok(self.keep(key, PixelData::new(data), keep))
     }
 
+    /// Read and decode the small and large meta data blocks.
     fn read_metadata(&self) -> Result<MetaData> {
         let info = &self.inner.info;
         let mut md = MetaData::default();
@@ -1266,8 +1320,11 @@ impl<R: Read + Seek + Send> SharedReader<R> {
     }
 }
 
+/// A decoded stored block.
 enum Block {
+    /// A constant face's single texel.
     Constant(Vec<u8>),
+    /// Full pixel data.
     Image(PixelData),
 }
 
