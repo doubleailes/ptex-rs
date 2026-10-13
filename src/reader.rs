@@ -47,11 +47,18 @@ const DEFAULT_TILE_CACHE_CAPACITY: usize = 16;
 /// # Ok::<(), ptex::Error>(())
 /// ```
 pub struct PtexReader<R = BufReader<File>> {
+    /// The open stream.
     io: R,
+    /// Header, face table and level table, parsed at open.
     info: FileInfo,
+    /// Per-level face data headers, loaded on first use.
     levels: Vec<Option<Level>>,
+    /// Recently used tile directories keyed by block offset and
+    /// resolution, most recent first.
     tile_cache: Vec<(u64, Res, TileDir)>,
+    /// Maximum length of `tile_cache`.
     tile_cache_cap: usize,
+    /// Meta data, loaded on first use.
     metadata: Option<MetaData>,
 }
 
@@ -493,6 +500,7 @@ impl<R: Read + Seek> PtexReader<R> {
 
     // ---- internal reading helpers ----
 
+    /// Seek the stream to an absolute file offset.
     fn seek(&mut self, pos: u64) -> Result<()> {
         self.io.seek(SeekFrom::Start(pos))?;
         Ok(())
@@ -731,6 +739,7 @@ impl<R: Read + Seek> PtexReader<R> {
         Ok(buf[off..off + pixel_size].to_vec())
     }
 
+    /// Read and decode the small and large meta data blocks.
     fn read_metadata(&mut self) -> Result<MetaData> {
         let mut md = MetaData::default();
 

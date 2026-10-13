@@ -7,8 +7,11 @@ use crate::types::MetaDataType;
 /// A single meta data entry.
 #[derive(Debug, Clone)]
 pub struct MetaDataEntry {
+    /// Lookup key.
     key: String,
+    /// Element type of the value array.
     data_type: MetaDataType,
+    /// Value array, little-endian elements packed back to back.
     data: Vec<u8>,
 }
 
@@ -113,6 +116,7 @@ impl MetaDataEntry {
 /// [`MetaDataType`].
 #[derive(Debug, Default, Clone)]
 pub struct MetaData {
+    /// Entries in file order.
     entries: Vec<MetaDataEntry>,
 }
 
@@ -196,6 +200,7 @@ impl MetaData {
         Ok(())
     }
 
+    /// Append a decoded entry.
     pub(crate) fn add_entry(&mut self, key: String, data_type: MetaDataType, data: Vec<u8>) {
         self.entries.push(MetaDataEntry {
             key,

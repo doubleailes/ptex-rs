@@ -12,10 +12,15 @@ use crate::types::{float_to_half, half_to_float, DataType, FaceInfo};
 /// Integer types accumulate in a wider integer and shift (matching the C++
 /// implementation); float types accumulate in f32.
 trait Texel: Copy {
+    /// Size of one element in bytes.
     const SIZE: usize;
+    /// Read one little-endian element from the start of `b`.
     fn get(b: &[u8]) -> Self;
+    /// Write this element little-endian to the start of `b`.
     fn put(self, b: &mut [u8]);
+    /// Average of two elements.
     fn halve_sum(a: Self, b: Self) -> Self;
+    /// Average of four elements.
     fn quarter_sum(a: Self, b: Self, c: Self, d: Self) -> Self;
 }
 
@@ -216,6 +221,7 @@ pub fn multalpha(
     }
 }
 
+/// Typed kernel behind [`multalpha`].
 fn multalpha_t<T: Texel>(
     data: &mut [u8],
     npixels: usize,
@@ -284,6 +290,8 @@ pub fn copy_rows(
     }
 }
 
+/// Call the generic kernel `$f` instantiated for the [`Texel`] type
+/// matching `$dt`.
 macro_rules! dispatch {
     ($dt:expr, $f:ident, $src:expr, $sstride:expr, $uw:expr, $vw:expr, $dst:expr, $dstride:expr, $nchan:expr) => {
         match $dt {
@@ -351,6 +359,7 @@ pub fn reduce_tri(
     dispatch!(dt, reduce_tri_t, src, sstride, w, 0, dst, dstride, nchan)
 }
 
+/// Typed kernel behind [`reduce`].
 fn reduce_t<T: Texel>(
     src: &[u8],
     sstride: usize,
@@ -382,6 +391,7 @@ fn reduce_t<T: Texel>(
     }
 }
 
+/// Typed kernel behind [`reduce_u`].
 fn reduce_u_t<T: Texel>(
     src: &[u8],
     sstride: usize,
@@ -406,6 +416,7 @@ fn reduce_u_t<T: Texel>(
     }
 }
 
+/// Typed kernel behind [`reduce_v`].
 fn reduce_v_t<T: Texel>(
     src: &[u8],
     sstride: usize,
@@ -429,6 +440,7 @@ fn reduce_v_t<T: Texel>(
     }
 }
 
+/// Typed kernel behind [`reduce_tri`].
 fn reduce_tri_t<T: Texel>(
     src: &[u8],
     sstride: usize,
