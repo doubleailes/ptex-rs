@@ -1,3 +1,7 @@
+// Portions derived from Ptex, Copyright 2014 Disney Enterprises, Inc.
+// Licensed under the BSD-style Ptex license; see LICENSE-PTEX.
+// Rust port and additions licensed under MIT; see LICENSE-MIT.
+
 //! On-disk file format structures (ported from `PtexIO.h`).
 //!
 //! All multi-byte values in a Ptex file are stored little-endian.

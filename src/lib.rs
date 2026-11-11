@@ -1,3 +1,7 @@
+// Portions derived from Ptex, Copyright 2014 Disney Enterprises, Inc.
+// Licensed under the BSD-style Ptex license; see LICENSE-PTEX.
+// Rust port and additions licensed under MIT; see LICENSE-MIT.
+
 //! A pure-Rust reader for Disney's [Ptex] per-face texture file format.
 //!
 //! This crate is a port of the reading side of the original C++
