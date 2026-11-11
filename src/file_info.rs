@@ -1,3 +1,7 @@
+// Portions derived from Ptex, Copyright 2014 Disney Enterprises, Inc.
+// Licensed under the BSD-style Ptex license; see LICENSE-PTEX.
+// Rust port and additions licensed under MIT; see LICENSE-MIT.
+
 //! Immutable, parsed-at-open state of a Ptex file.
 //!
 //! Everything in [`FileInfo`] is read once when the file is opened and never

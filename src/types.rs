@@ -1,3 +1,7 @@
+// Portions derived from Ptex, Copyright 2014 Disney Enterprises, Inc.
+// Licensed under the BSD-style Ptex license; see LICENSE-PTEX.
+// Rust port and additions licensed under MIT; see LICENSE-MIT.
+
 //! Common data structures and enums used throughout the API.
 //!
 //! These mirror the types defined in `Ptexture.h` of the original C++

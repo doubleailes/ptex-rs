@@ -187,6 +187,14 @@ only the `.ptx` and a dense grid of reference pixel samples are committed.
 
 ## License
 
-MIT (this crate). The Ptex file format and the original library are by
-Walt Disney Animation Studios; the original C++ library is licensed under
-the [Ptex license](https://github.com/wdas/ptex/blob/main/LICENSE).
+This crate is a port of the reading side of the C++ Ptex library, so it is
+distributed under two licenses (SPDX: `MIT AND BSD-3-Clause`):
+
+- the portions derived from Ptex remain under the BSD-style Ptex license,
+  Copyright 2014 Disney Enterprises, Inc. — see [`LICENSE-PTEX`](LICENSE-PTEX);
+- the Rust port and the additions made in this crate are under the MIT
+  license — see [`LICENSE-MIT`](LICENSE-MIT).
+
+This project is not affiliated with, or endorsed by, Walt Disney Animation
+Studios, Walt Disney Pictures or Disney Enterprises, Inc. "Ptex" is used
+only to identify the file format.

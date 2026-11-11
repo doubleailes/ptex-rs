@@ -1,3 +1,7 @@
+// Portions derived from Ptex, Copyright 2014 Disney Enterprises, Inc.
+// Licensed under the BSD-style Ptex license; see LICENSE-PTEX.
+// Rust port and additions licensed under MIT; see LICENSE-MIT.
+
 //! Stateless decoding of Ptex data blocks.
 //!
 //! Every function here turns raw bytes read from the file into pixels or
